@@ -1,0 +1,551 @@
+#!/usr/bin/python3
+
+### Script processes fMRI behavioral response files and produces event-by-event and summary files. Flexible to process many different types of behavioral tasks. Returns .csv event-by-event and summary and .mat files that can be used in SPM for single-subject analyses.
+### Input can be a 1) single file, 2) MRI scanner name, 3) MRI scanner ID (incomplete IDs partially supported), 4) .txt file with individual elements on each line. Elements in 4) can be of any type 1)-3).
+
+### Example commands
+## python3 fmriResponseSummary_RH.py /rawdata/mr-rh/MRraw/prisma/p086_ln/faces2_p086_ln_1763.txt
+## python3 fmriResponseSummary_RH.py faces2_p086_ln_1763.txt (expects file in current dir)
+## python3 fmriResponseSummary_RH.py p123
+## python3 fmriResponseSummary_RH.py p1 (will process all files for all subjects starting with "p1", e.g., p12, p100, p199, etc.)
+## python3 fmriResponseSummary_RH.py prisma (will process all files for all prisma scan folders)
+
+### Tasks supported
+## Hariri Faces Task (20180109)
+## Reward Task (20180109)
+## Alcohol Task (20180109)
+## PSAP (incomplete)
+
+### Updates
+## 20201111 - work with MR001 datas
+
+### Patrick M. Fisher
+
+# Load relevant libraries
+from sys import argv
+#from sys import exit
+import re
+import pandas as pd
+import numpy as np
+from os import listdir
+from os import path
+from io import open
+import os
+import io
+import time
+import scipy.io as sio
+#import itertools
+
+# Input from command line
+script, input1 = argv
+
+class Response():
+
+	def __init__(self):
+		""" Initialize variables """
+
+		self.input1 = input1
+
+		# Dictionary of methods for processing different input types
+		self.inputDict = {'processSingleFile': self.processSingleFile, 'processListFile': self.processListFile, 'processScanner': self.processScanner, 'processSubjID': self.processSubjID}
+
+		# Dictionary of methods for processing different task types
+		self.taskDict = {'VAS': self.evalAlcohol, 'Reward': self.evalReward, 'Faces': self.evalFaces}
+		self.outputName = {'VAS': 'alcohol', 'Reward': 'reward', 'Faces': 'faces'}
+
+		# MRI scanner name scheme
+		self.scannerNames = {'p': 'prisma', 'v': 'verio', 'm': 'mmr', 'n': 'mr001'}
+
+		# If not looking in local directory, look here
+		self.top = '/rawdata/mr-rh/MRraw/'
+
+		# Regexp for expected behavioral task file name structure
+		# self.allMatchTypes = r'^(VAS).*(.txt)$|^(faces[0-9].*(.txt)$|^(reward).*(.txt)$)'
+		self.allMatchTypes = r'^(VAS).*(.txt)$|^(HaririFaces[0-9]_dansk).*(.txt)$|^(Hariri_Reward_TC_dansk2_noTrigger).*(.txt)$'
+
+		# Updated while processing inputs
+		self.currTaskType = ''
+		self.currSubjID = ''
+		self.currSourceFile = ''
+		self.currTime = time.strftime('%c')
+
+		# SPM related structure (.mat file output)
+		self.spmStruct = {'names': [], 'onsets': [], 'durations': []}
+
+	def mapInput(self, input1):
+		""" Map input to appropriate type """
+
+		fullFilePath = None
+
+		# Inputs starting with "/" assumed to be full path information
+		if re.search('^(/).*(.txt)$', input1):
+			fullFilePath = input1
+			if not path.isfile(fullFilePath):
+				raise ValueError('%s does not exist' % fullFilePath)
+
+		# Inputs with .txt suffix and without full path information assumed to be in current directory
+		elif re.search('(.txt)$', input1):
+			fullFilePath = '/'.join([os.getcwd(), input1])
+			if not path.isfile(fullFilePath):
+				raise ValueError('%s does not exist' % fullFilePath)
+
+		# If a filename specified as input1
+		if fullFilePath:
+			try:
+				with open(fullFilePath, 'r', encoding='utf-16') as f:
+					if f.readline().rstrip() == '*** Header Start ***':
+						return ('processSingleFile', fullFilePath)
+					else:
+						return ('processListFile', fullFilePath)
+			except UnicodeError:
+				return ('processListFile', fullFilePath)
+
+		# Check if input matches MRI scanner name
+		if input1 in [v for k,v in self.scannerNames.items()]:
+			return ('processScanner', input1)
+
+		# If input matches MRI scanner "prefix" (keys in self.scannerNames), assume it is a subject ID
+		if re.search(r'^[' + re.escape(''.join(self.scannerNames.keys())) + ']', input1):
+			return ('processSubjID', input1)
+
+	def processSingleFile(self, fName):
+		""" Process single .txt file input """
+
+		# Pass filename forward
+		return [fName]
+
+	def processSubjID(self, subjID):
+		""" Process subjID input """
+
+		# All .txt files matching criteria for fMRI behavioral files
+		allMatches = []
+
+		# Determine MRI scanner name
+		if re.search(r'^[' + re.escape(''.join(self.scannerNames.keys())) + ']', subjID):
+			scanner = self.scannerNames[subjID[0]]
+		else:
+			raise ValueError('No scanner match for %s ' % subjID)
+
+		scannerFolder = ''.join([self.top, scanner])
+
+		# Find all subject IDs that START with "subjID" (can be >1)
+		subjIDFolder = [idx for idx in listdir(scannerFolder) if idx.startswith(subjID)]
+		if len(subjIDFolder) == 0:
+			raise ValueError('No folder match found %s' % subjID)
+
+		fullFolderPath = [''.join([self.top, scanner, '/', idx]) for idx in subjIDFolder]
+
+		# If only one match found, ensure stored as list
+		if type(fullFolderPath) is str:
+			fullFolderPath = [fullFolderPath]
+
+		# Identify all .txt files matching criteria for fMRI behavioral files among matches to "subjID"
+		for folderName in fullFolderPath:
+			currFolderList = listdir(folderName)
+			currFolderMatches = ['/'.join([folderName, idx]) for idx in currFolderList if re.search(self.allMatchTypes, idx)]
+			allMatches += currFolderMatches
+
+		# Return list of .txt files for further processing
+		return allMatches
+
+	def processScanner(self, scanner):
+		""" Process scanner input """
+
+		# All .txt files matching criteria for fMRI behavioral files
+		allMatches = []
+		scannerFolder = ''.join([self.top, scanner])
+
+		# List of folders (presumably subject IDs) in scanner folder
+		foldersList = listdir(scannerFolder)
+
+		# Identify all .txt files matching criteria for fMRI behavioral files among subjects' folders
+		for folderName in foldersList:
+			tmpNameFull = '/'.join([scannerFolder, folderName])
+
+			# Make sure tmpNameFull is a folder
+			if os.path.isdir(tmpNameFull):
+				currFolderList = listdir(tmpNameFull)
+				currFolderMatches = ['/'.join([tmpNameFull, idx]) for idx in currFolderList if re.search(self.allMatchTypes, idx)]
+				allMatches += currFolderMatches
+
+		# Return list of .txt files for further processing
+		return allMatches
+
+	def processListFile(self, fName):
+		""" Process list (.txt file) input """
+
+		# List of inputs from .txt file input
+		idList = []
+
+		# All .txt files matching criteria for fMRI behavioral files
+		allMatches = []
+		with open(fName, 'r') as f:
+			for line in f:
+				l = line.rstrip()
+				idList.append(l)
+
+		# Map each line in list. Enables list to contain subject ID, MRI scanner name, or files
+		inputInfo = [self.mapInput(idx) for idx in idList]
+		for idx in inputInfo:
+			allMatches += self.inputDict[idx[0]](idx[1])
+
+		# Return list of .txt files for further processing
+		return allMatches
+
+	def taskIdentify(self, fName):
+		""" Identify task for given .txt file """
+
+		# Update attribute
+		self.currSourceFile = fName
+		fileParts = fName.split('/')
+		regExpStr = r'^[' + ''.join(self.scannerNames.keys()) + '][0-9][0-9][0-9]'
+		# Determine subject ID based on parts of file name
+		idMatches = [idx for idx in fileParts if re.search(regExpStr, idx)]
+
+		# Convert list to string and update attribute
+		if idMatches:
+			self.currSubjID = ''.join(idMatches)
+		else:
+			self.currSubjID = ''
+
+		# Extract two pieces of information from fMRI behavioral file
+		with open(fName, 'r', encoding='utf-16') as f:
+			for line in f:
+				if line.startswith('Experiment: '):
+					l = line.rstrip()
+					l_split = l.split(' ')
+					self.currTaskType = ''.join([idx for idx in self.taskDict.keys() if idx in l_split[1]])
+
+				# If subject ID has not been determined, use DataFile.Basename from file
+				if self.currSubjID == '' and line.startswith('DataFile.Basename'):
+					l = line.rstrip()
+					l_split = l.split(' ')
+					self.currSubjID = l_split[1]
+
+		# Return method for identified task type
+		return self.taskDict[self.currTaskType]
+
+	def printFile (self, fullFileName):
+		""" Print response file """
+
+		with io.open(fullFileName, 'r', encoding = 'utf-16') as f:
+			for line in f:
+				print(str(line.rstrip()).lstrip())
+
+	def evalFaces(self, fullFileName):
+		""" Evaluate faces behavioral response file """
+
+		# Update attribute to incorporate version of faces task (i.e., 1,2,3, or 4)
+		self.outputName['Faces'] = ''.join(['faces', self.currSourceFile.split('HaririFaces')[1][0]])
+
+		colEvents = ['type', 'subtype', 'imgName', 'rt', 'resp', 'cresp', 'acc', 'omitted']
+		colSummary = ['RT_corrOnly', 'RT_all', 'accuracy', 'correct', 'incorrect', 'omitted']
+		rowSummary = ['shapes', 'fear', 'angry', 'neutral', 'surprise', 'faces']
+
+		dfEvent = pd.DataFrame(columns = colEvents)
+		dfSummary = pd.DataFrame(index = rowSummary, columns = colSummary)
+
+		# New trial information identifiers.
+		trialType = {'Procedure: ShapesTrialProc': 'shapes', 'Procedure: FearFacesProc': 'fear', 'Procedure: NeutralFacesProc': 'neutral', 'Procedure: AngryFacesProc': 'angry', 'Procedure: SurpriseFacesProc': 'surprise'}
+
+		# Process fMRI behavioral file
+		with io.open(fullFileName,'r', encoding='utf-16') as f:
+		    for line in f:
+
+		        l = str(line.rstrip()).lstrip()
+
+		        # trial subtype
+		        if l in trialType.keys():
+		            dfEvent.loc[len(dfEvent)+1] = pd.Series({'subtype': trialType[l]})
+
+		        # trial type
+		        if re.search('^(TrialCondition)', l):
+		            l_split = l.split(' ')
+		            dfEvent.at[len(dfEvent), 'type'] = l_split[1]
+
+		        # accuracy
+		        if re.search('.*(Probe).*(ACC).*', l):
+		            l_split = l.split(' ')
+		            dfEvent.at[len(dfEvent), 'acc'] = int(l_split[1])
+
+		        # reaction time
+		        if re.search('.*(Probe).*(\.RT:).*', l):
+		            l_split = l.split(' ')
+		            if len(l_split) == 2:
+		                dfEvent.at[len(dfEvent), 'rt']  = int(l_split[1])
+		                dfEvent.at[len(dfEvent), 'omitted']  = False
+		            else:
+		                dfEvent.at[len(dfEvent), 'omitted']  = True
+
+		        # actual response
+		        if re.search('.*(Probe).*(\.RESP).*', l):
+		            l_split = l.split(' ')
+		            if len(l_split) == 2:
+		                dfEvent.at[len(dfEvent), 'resp']  = int(l_split[1])
+
+		        # correct response
+		        if re.search('.*(Probe).*(\.CRESP).*', l):
+		            l_split = l.split(' ')
+		            dfEvent.at[len(dfEvent), 'cresp']  = int(l_split[1])
+
+		        # stimulus (image file name)
+		        if re.search('^(Stimulus)', l):
+		            l_split = l.split(' ')
+		            dfEvent.at[len(dfEvent), 'imgName']  = l_split[1]
+
+		# Compute summary measures
+		for k,v in trialType.items():
+			dfSummary.at[v, 'RT_corrOnly'] = np.mean(dfEvent.loc[(dfEvent['subtype'] == v) & dfEvent['acc'] == 1, 'rt'])
+			dfSummary.at[v, 'RT_all'] = np.mean(dfEvent.loc[dfEvent['subtype'] == v, 'rt'])
+			dfSummary.at[v, 'accuracy'] = np.mean(dfEvent.loc[dfEvent['subtype'] == v, 'acc'])
+			dfSummary.at[v, 'correct'] = np.sum(dfEvent.loc[dfEvent['subtype'] == v, 'acc'])
+			dfSummary.at[v, 'omitted'] = np.sum(dfEvent.loc[dfEvent['subtype'] == v, 'omitted'])
+			dfSummary.at[v, 'incorrect'] = np.sum(dfEvent['subtype'] == v) - dfSummary.at[v, 'correct'] - dfSummary.at[v, 'omitted']
+
+		dfSummary.at['faces', 'RT_corrOnly'] = np.mean(dfEvent.loc[(dfEvent['type'] == 'faces') & dfEvent['acc'] == 1, 'rt'])
+		dfSummary.at['faces', 'RT_all'] = np.mean(dfEvent.loc[dfEvent['type'] == 'faces', 'rt'])
+		dfSummary.at['faces', 'accuracy'] = np.mean(dfEvent.loc[dfEvent['type'] == 'faces', 'acc'])
+		dfSummary.at['faces', 'correct'] = np.sum(dfEvent.loc[dfEvent['type'] == 'faces', 'acc'])
+		dfSummary.at['faces', 'omitted'] = np.sum(dfEvent.loc[dfEvent['type'] == 'faces', 'omitted'])
+		dfSummary.at['faces', 'incorrect'] = np.sum(dfEvent['type'] == 'faces') - dfSummary.at['faces', 'correct'] - dfSummary.at['faces', 'omitted']
+
+		# Clean up fractions
+		dfSummary['RT_corrOnly'] = [float("{0:.3f}".format(idx)) for idx in dfSummary['RT_corrOnly']]
+		dfSummary['RT_all'] = [float("{0:.3f}".format(idx)) for idx in dfSummary['RT_all']]
+		dfSummary['accuracy'] = [float("{0:.3f}".format(idx)) for idx in dfSummary['accuracy']]
+
+		# Transpose to match how Peter reads it into database
+		dfSummary = dfSummary.transpose()
+
+		# Return even and summary data frames
+		return {'event': dfEvent, 'summary': dfSummary}
+
+	def evalReward(self, fullFileName):
+		""" Evaluate reward behavioral response file """
+
+		colEvents = ['type', 'subtype', 'RT', 'resp', 'win_loss', 'omitted', 'pressFixation']
+		colSummary = ['RT', 'Omit', 'Omit_frac', 'Wins', 'Losses']
+		rowSummary = ['Reward', 'NoReward', 'Control', 'Total']
+
+		dfEvent = pd.DataFrame(columns = colEvents)
+		dfSummary = pd.DataFrame(index = rowSummary, columns = colSummary)
+
+		# Process fMRI behavioral file
+		with io.open(fullFileName,'r', encoding='utf-16') as f:
+			for line in f:
+				l = str(line.rstrip()).lstrip()
+
+				# Assign subtype
+				if re.search('^TrialCondition', l):
+					l_split = l.split(' ')
+					dfEvent.loc[len(dfEvent)+1] = pd.Series({'subtype': l_split[1].lower()})
+
+				# Determine response
+				if re.search('GamStim.RESP|ControlStim.RESP', l):
+					l_split = l.split(' ')
+					if len(l_split) == 2:
+						dfEvent.loc[len(dfEvent), 'resp'] = int(l_split[1])
+						dfEvent.loc[len(dfEvent), 'omitted'] = False
+					else:
+						dfEvent.loc[len(dfEvent), 'omitted'] = True
+
+				# Reaction time
+				if re.search('(GamStim.RT\:)|(ControlStim.RT\:)', l):
+					l_split = l.split(' ')
+					if len(l_split) == 2 and int(l_split[1]) > 0:
+						dfEvent.loc[len(dfEvent), 'RT'] = int(l_split[1])
+					else:
+						dfEvent.loc[len(dfEvent), 'RT'] = None
+
+					if re.search('GuessingFixation.RESP',l):
+						l_split = l.split(' ')
+						if len(l_split) == 2:
+							dfEvent.loc[len(dfEvent), 'pressFixation'] = 1
+
+				# Determine type (due to .txt file structure, cannot be determined until after block is completed)
+				if re.search('^(Procedure).*RewardBlockProc', l):
+					dfEvent.iloc[-5:,dfEvent.columns.get_loc('type')] = 'Reward'
+				elif re.search('^(Procedure).*LossBlockProc', l):
+					dfEvent.iloc[-5:,dfEvent.columns.get_loc('type')] = 'NoReward'
+				elif re.search('^(Procedure).*ControlBlockProc', l):
+					dfEvent.iloc[-5:,dfEvent.columns.get_loc('type')] = 'Control'
+
+		# Money won or lost
+		dfEvent.loc[(dfEvent['subtype'] == 'reward') & (~dfEvent['resp'].isnull()), 'win_loss'] = 'win'
+		dfEvent.loc[(dfEvent['subtype'] == 'loss'), 'win_loss'] = 'loss'
+		dfEvent.loc[((dfEvent['subtype'] == 'reward') & (dfEvent['resp'].isnull())), 'win_loss'] = 'loss'
+
+		# Summary measures
+		for t in dfEvent.type.unique():
+			dfSummary.at[t, 'RT'] = np.mean(dfEvent.loc[dfEvent['type'] == t, 'RT'])
+			dfSummary.at[t, 'Omit'] = np.sum(dfEvent.loc[dfEvent['type'] == t, 'omitted'])
+			dfSummary.at[t, 'Omit_frac'] = dfSummary.loc[t, 'Omit']/len(dfEvent.loc[dfEvent['type'] == t])
+			dfSummary.at[t, 'Wins'] = np.sum(dfEvent.loc[dfEvent['type'] == t, 'win_loss'] == 'win')
+			dfSummary.at[t, 'Losses'] = np.sum(dfEvent.loc[dfEvent['type'] == t, 'win_loss'] == 'loss')
+
+		dfSummary.at['Total', 'RT'] = np.mean(dfEvent['RT'])
+		dfSummary.at['Total', 'Omit'] = np.sum(dfEvent['omitted'])
+		dfSummary.at['Total', 'Omit_frac'] = dfSummary.at['Total', 'Omit']/len(dfEvent)
+		dfSummary.at['Total', 'Wins'] = np.sum(dfEvent['win_loss'] == 'win')
+		dfSummary.at['Total', 'Losses'] = np.sum(dfEvent['win_loss'] == 'loss')
+
+		# Clean fractions
+		dfSummary['RT'] = [float("{0:.3f}".format(idx)) for idx in dfSummary['RT']]
+		dfSummary['Omit_frac'] = [float("{0:.3f}".format(idx)) for idx in dfSummary['Omit_frac']]
+
+		# Transpose to match how Peter reads it into database
+		dfSummary = dfSummary.transpose()
+
+		# Return even and summary data frames
+		return {'event': dfEvent, 'summary': dfSummary}
+
+	def evalAlcohol(self, fullFileName):
+		""" Evaluate alcohol craving response file """
+
+		colEvents = ['type', 'subtype', 'fileName', 'duration', 'onsetFromStart', 'rating', 'ratingOmit']
+		colSummary = ['ratingDuration', 'ratingAvg', 'ratingOmit']
+		rowSummary = ['neutral', 'wine', 'schnapps', 'beer', 'allAlcohol']
+		allAlcohol = ['wine', 'schnapps', 'beer']
+
+		# New trial information identifiers.
+		trialType = {'Procedure: ImgNeutralPresent': ('neutral', 'neutral'), 'Procedure: VasOnlyExample': ('rating', 'rating'), 'Procedure: ImgWinePresent': ('alcohol', 'wine'), 'Procedure: ImgSchnappsPresent': ('alcohol', 'schnapps'), 'Procedure: ImgBeerPresent': ('alcohol', 'beer')}
+
+		# Onset times (absolute)
+		times = {'old': ('', 0), 'new': ('', 0)}
+
+		# Clock at task start (absolute)
+		startTime = None
+
+		dfEvent = pd.DataFrame(columns = colEvents)
+		dfSummary = pd.DataFrame(index = rowSummary, columns = colSummary)
+
+		# Process fMRI behavioral file
+		with io.open(fullFileName,'r', encoding='utf-16') as f:
+			for line in f:
+				l = str(line.rstrip()).lstrip()
+
+				# Assign subtype
+				if l in trialType.keys():
+					dfEvent.loc[len(dfEvent)+1] = pd.Series({'type': trialType[l][0], 'subtype': trialType[l][1]})
+					if trialType[l][0] == 'rating':
+						dfEvent.at[len(dfEvent), 'fileName'] = dfEvent.at[len(dfEvent)-1, 'subtype']
+
+				# stimulus (image file name)
+				if re.search('^filename\:', l):
+					l_split = l.split(' ')
+					dfEvent.loc[len(dfEvent), 'fileName'] = l_split[1]
+
+				# Onset time (absolute)
+				if re.search('.*(OnsetTime\:)', l):
+					l_split = l.split(' ')
+					l_split[1] = int(l_split[1])
+					if startTime is None:
+						startTime = l_split[1]
+
+					times['old'] = times['new']
+					times['new'] = (l_split[0], l_split[1])
+
+					# Calculate onset time (relative)
+					if re.search('.*(Image\.OnsetTime)|VasSlide\.OnsetTime', times['new'][0]):
+						dfEvent.at[len(dfEvent), 'onsetFromStart'] = float(l_split[1] - startTime)/1000
+
+					# Stimulus duration
+					if re.search('.*(Image\.OnsetTime)', times['old'][0]):
+						diff = (times['new'][1] - times['old'][1])
+						dfEvent.at[len(dfEvent)-1, 'duration'] = float(diff)/1000
+
+					# Rating scale duration
+					if re.search('VasSlide\.OnsetTime', times['old'][0]):
+						diff = (times['new'][1] - times['old'][1])
+						dfEvent.at[len(dfEvent), 'duration'] = float(diff)/1000
+
+				# Craving score
+				if re.search('VasSlide.VAS', l):
+					l_split = l.split(' ')
+					dfEvent.at[len(dfEvent), 'rating'] = int(l_split[1])
+
+		# Summary measures
+		for t in rowSummary[:4]:
+			dfSummary.at[t, 'ratingAvg'] = np.mean(dfEvent.loc[dfEvent['fileName'] == t, 'rating'])
+			dfSummary.at[t, 'ratingDuration'] = np.mean(dfEvent.loc[dfEvent['fileName'] == t, 'duration'])
+			dfSummary.at[t, 'ratingOmit'] = np.sum(-dfEvent.loc[dfEvent['fileName'] == t, 'ratingOmit'].isnull())
+			self.spmStruct['names'].append(t)
+			self.spmStruct['onsets'].append(dfEvent.loc[dfEvent['subtype'] == t, 'onsetFromStart'])
+			self.spmStruct['durations'].append(dfEvent.loc[dfEvent['subtype'] == t, 'duration'])
+			self.spmStruct['names'].append(t + 'Rating')
+			self.spmStruct['onsets'].append(dfEvent.loc[dfEvent['fileName'] == t, 'onsetFromStart'])
+			self.spmStruct['durations'].append(dfEvent.loc[dfEvent['fileName'] == t, 'duration'])
+
+		dfSummary.at['allAlcohol', 'ratingAvg'] = np.mean(dfEvent.loc[dfEvent['fileName'].isin(allAlcohol), 'rating'])
+		dfSummary.at['allAlcohol', 'ratingDuration'] = np.mean(dfEvent.loc[dfEvent['fileName'].isin(allAlcohol), 'duration'])
+		dfSummary.at['allAlcohol', 'ratingOmit'] = np.sum(-dfEvent.loc[dfEvent['fileName'].isin(allAlcohol), 'ratingOmit'].isnull())
+
+		# Clean fractions
+		dfSummary['ratingAvg'] = [float("{0:.3f}".format(idx)) for idx in dfSummary['ratingAvg']]
+		dfSummary['ratingDuration'] = [float("{0:.3f}".format(idx)) for idx in dfSummary['ratingDuration']]
+
+		# Return even and summary data frames
+		return {'event': dfEvent, 'summary': dfSummary, 'spm': self.spmStruct}
+
+	def idTrim(self, id):
+		""" Trim initials from a scan ID name """
+
+		# Prisma
+		if re.search('^(p[0-9][0-9][0-9])', id):
+			return id[:4]
+		# Verio/mMR
+		elif re.search('^([mv][0-9][0-9][0-9][0-9])', id):
+			return id[:5]
+		else:
+			return id
+
+	def writeRespCsv(self, respOutput):
+		""" Write response files to .csv """
+
+		# Time stamp of when .txt file processed (not used, currently)
+		self.currTime = time.strftime('%c')
+
+		scannerID_initialsOmit = self.idTrim(self.currSubjID)
+		eventFileName = '%s_%s_EventResp.txt' % (scannerID_initialsOmit, self.outputName[self.currTaskType])
+		summaryFileName = '%s_%s_SummaryResp.txt' % (scannerID_initialsOmit, self.outputName[self.currTaskType])
+
+		# Write output files
+		respOutput['event'].to_csv('/'.join([os.getcwd(), eventFileName]))
+		print('Event file written: %s ' % ('/'.join([os.getcwd(), eventFileName])))
+		respOutput['summary'].to_csv('/'.join([os.getcwd(), summaryFileName]))
+		print('Summary file written: %s ' % ('/'.join([os.getcwd(), summaryFileName])))
+
+	def writeRespMat(self, respOutput):
+		""" Write .mat file that can be read into SPM single-subject design matrix """
+
+		scannerID_initialsOmit = self.idTrim(self.currSubjID)
+		matFileName = '%s_%sRespSPM.mat' % (scannerID_initialsOmit, self.outputName[self.currTaskType])
+
+		# Currently formatted for alcohol task only
+		if self.currTaskType != 'VAS':
+			print('Skipping .mat write for %s, %s ' % (scannerID_initialsOmit, self.outputName[self.currTaskType]))
+			return
+
+		# Work around
+		## I think respData['spm']['names'] is a list and therefore creating these variables should not be necessary but it does not work otherwise (reason unknown).
+		onsets = [respData['spm']['onsets'][idx].tolist() for idx in range(len(respData['spm']['onsets']))]
+		durations = [respData['spm']['durations'][idx].tolist() for idx in range(len(respData['spm']['durations']))]
+		names = np.asarray(respData['spm']['names'], dtype = 'O')
+		onsets = np.asarray(onsets, dtype = 'O')
+		durations = np.asarray(durations, dtype = 'O')
+
+		# Write output file
+		sio.savemat('/'.join([os.getcwd(), matFileName]), {'names': names, 'durations': durations, 'onsets': onsets})
+		print('SPM response file written: %s ' % ('/'.join([os.getcwd(), matFileName])))
+
+if __name__ == '__main__':
+	""" Script called from linux command line """
+
+a = Response()
+inputInfo = a.mapInput(a.input1)
+fileNames = a.inputDict[inputInfo[0]](inputInfo[1])
+for f in fileNames:
+	taskType = a.taskIdentify(f)
+	respData = taskType(f)
+	a.writeRespCsv(respData)
+	a.writeRespMat(respData)
