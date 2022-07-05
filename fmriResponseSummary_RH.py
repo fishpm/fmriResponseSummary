@@ -15,6 +15,7 @@
 ## Reward Task (20180109)
 ## Alcohol Task (20180109)
 ## PSAP (incomplete)
+## RLP (20220628)
 
 ### Updates
 ## 20201111 - work with MR001 datas
@@ -50,8 +51,8 @@ class Response():
 		self.inputDict = {'processSingleFile': self.processSingleFile, 'processListFile': self.processListFile, 'processScanner': self.processScanner, 'processSubjID': self.processSubjID}
 
 		# Dictionary of methods for processing different task types
-		self.taskDict = {'VAS': self.evalAlcohol, 'Reward': self.evalReward, 'Faces': self.evalFaces}
-		self.outputName = {'VAS': 'alcohol', 'Reward': 'reward', 'Faces': 'faces'}
+		self.taskDict = {'VAS': self.evalAlcohol, 'Reward': self.evalReward, 'Faces': self.evalFaces, 'RLP': self.evalRLP}
+		self.outputName = {'VAS': 'alcohol', 'Reward': 'reward', 'Faces': 'faces', 'RLP': 'rlp'}
 
 		# MRI scanner name scheme
 		self.scannerNames = {'p': 'prisma', 'v': 'verio', 'm': 'mmr', 'n': 'mr001'}
@@ -61,7 +62,7 @@ class Response():
 
 		# Regexp for expected behavioral task file name structure
 		# self.allMatchTypes = r'^(VAS).*(.txt)$|^(faces[0-9].*(.txt)$|^(reward).*(.txt)$)'
-		self.allMatchTypes = r'^(VAS).*(.txt)$|^(HaririFaces[0-9]_dansk).*(.txt)$|^(Hariri_Reward_TC_dansk2_noTrigger).*(.txt)$'
+		self.allMatchTypes = r'^(VAS).*(.txt)$|^(HaririFaces[0-9]_dansk).*(.txt)$|^(Hariri_Reward_TC_dansk2_noTrigger).*(.txt)$|^(RLP).*(.txt)$'
 
 		# Updated while processing inputs
 		self.currTaskType = ''
@@ -485,16 +486,139 @@ class Response():
 		dfSummary['ratingDuration'] = [float("{0:.3f}".format(idx)) for idx in dfSummary['ratingDuration']]
 
 		# Return even and summary data frames
-		return {'event': dfEvent, 'summary': dfSummary, 'spm': self.spmStruct}
+		return {'event': dfEvent, 'summary': dfSummary, 'spm': self.spmStruct}	
+						
+	def evalRLP(self, fullFileName):
+		""" Evaluate RLP behavioral response file """
 
+		# column names
+		colEvents = ['trial', 'block', 'stimulus', 'onset', 'duration', 'reaction_time', 'response', 'cresponse', 'left_image', 'right_image', 'feedback_correct', 'feedback_incorrect', 'feedback_received', 'reinforcement_ratio']
+		
+		# variables to keep a strings
+		keepString = {'^(LeftImage)': 'left_image', '^(RightImage)': 'right_image', '^(FeedbackCorrect)': 'feedback_correct', '^(FeedbackIncorrect)': 'feedback_incorrect'}
+		
+		# variables to keep as numeric
+		keepNumeric = {'Fixation.OnsetTime': 'fix_on', 'Fixation.OffsetTime': 'fix_off', 'Cues.OnsetTime': 'cue_on', 'Cues.OffsetTime': 'cue_off', 'Response.OnsetTime': 'resp_on', 'Response.OffsetTime': 'resp_off', 'Feedback.OnsetTime': 'feed_on', 'Feedback.OffsetTime': 'feed_off', 'Cues.RESP': 'resp', 'Cues.CRESP': 'cresp', 'Cues.RT': 'rt', 'BreakText[0-9]{1}.OnsetTime': 'break_on', 'ScannerWaitPreBlock[0-9]{1}.OnsetTime': 'ready_on'}
+		
+		
+		dfEvent = pd.DataFrame(columns = colEvents) # event dataframe
+		trialCounter = 0
+		absoluteStart = None # time point (in ms) when paradigm starts
+		currTrial = {'trial': trialCounter} # current trial information
+
+		# Process fMRI behavioral file
+		with io.open(fullFileName,'r', encoding='utf-16') as f:
+			for line in f:
+				
+				l = str(line.rstrip()).lstrip()
+				
+				# new trial identifier
+				if l=='Procedure: Stimulus':
+					trialCounter += 1
+					if trialCounter > 1:
+						dfEvent = self.eventRLP(currTrial, dfEvent, absoluteStart)
+					currTrial = {'trial': trialCounter}
+				
+				# pull relevant field for string and numeric values of interest
+				strCheck = [v for k,v in keepString.items() if re.search(k,l)]
+				numCheck = [v for k,v in keepNumeric.items() if re.search(k,l)]
+				
+				if strCheck:
+					l_split = l.split(': ')
+					currTrial[''.join(strCheck)] = l_split[1]
+				elif numCheck:
+					l_split = l.split(': ')
+					if len(l_split) == 2:
+						if re.search('Cues.RT',l) and l_split[1] == '0':
+							currTrial[''.join(numCheck)] = None # process non-responses
+						elif re.search('Fixation.OnsetTime',l) and trialCounter == 1:
+							absoluteStart = int(l_split[1]) # first fixation onset is first event of task
+							currTrial[''.join(numCheck)] = int(l_split[1]) # update currTrial
+						else:
+							currTrial[''.join(numCheck)] = int(l_split[1]) # update currTrial
+					else:
+						currTrial[''.join(numCheck)] = None # update currTrial
+				
+				if re.search('^(Running)',l):
+					l_split = l.split(': ')
+					if re.search('Block(.*)List[0-9]{3,4}',l_split[1]):
+						currTrial['block'] = int(re.search('Block(.*)List',l_split[1]).group(1))
+						currTrial['reinforcement_ratio'] = int(re.search('Block[0-9]{1}List(.*)',l_split[1]).group(1))
+				
+				# onset of built in break periods
+				if re.search('BreakText[0-9]{1}.OnsetTime',l):
+					dfEvent = self.eventRLP(currTrial, dfEvent, absoluteStart)
+					trialCounter += 1
+					currTrial['trial'] = trialCounter
+					currTrial = {k:v for k,v in currTrial.items() if k in ['trial','block']}
+					l_split = l.split(': ')
+					currTrial['onset'] = int(l_split[1])
+					currTrial['stimulus'] = 'break'
+				
+				# alert to participant that break period is about to end
+				if re.search('ScannerWaitPreBlock[0-9]{1}.OnsetTime',l):
+					dfEvent = self.eventRLP(currTrial, dfEvent, absoluteStart)
+					trialCounter += 1
+					currTrial['trial'] = trialCounter
+					currTrial = {k:v for k,v in currTrial.items() if k in ['trial','block']}
+					l_split = l.split(': ')
+					currTrial['onset'] = int(l_split[1])
+					currTrial['stimulus'] = 'getReady'
+		
+		# compute durations
+		nanIdx = np.where(np.isnan(dfEvent['duration']))
+		for elem in nanIdx[0]:
+			if elem+1 < len(dfEvent.index):
+				dfEvent.at[elem,'duration'] = dfEvent.at[elem+1,'onset']-dfEvent.at[elem,'onset']
+			else:
+				dfEvent.at[elem,'duration'] = 30
+		
+		# Return event data frame (summary not written)
+		return {'event': dfEvent, 'summary': None}
+
+	def eventRLP(self, currTrial, dfEvent, absoluteStart):
+		""" Organize current trial and update dfEvent """
+		
+		nrep = 4 # rlp trials comprise four events (fixation, cue, response, feedback)
+		
+		# "break text" and "scanner wait" events handled differently
+		if all([i in currTrial.keys() for i in ['trial', 'block', 'onset', 'stimulus']]):
+			if 'ready_on' in currTrial.keys():
+				currTrial.pop('ready_on')
+			
+			currTrial['onset'] = (currTrial['onset'] - absoluteStart)/1000
+			dfEvent = dfEvent.append(pd.DataFrame(currTrial, index = [0]), ignore_index = True)
+		else:	
+			
+			# compute onsets relative to task start time (absoluteStart)
+			currOnsets = [currTrial['fix_on']-absoluteStart, currTrial['cue_on']-absoluteStart, currTrial['resp_on']-absoluteStart, currTrial['feed_on']-absoluteStart]
+			
+			# convert to seconds
+			currOnsets = [i/1000 for i in currOnsets]
+			
+			# compute durations
+			currDurations = [(currTrial['fix_off']-currTrial['fix_on'])/1000, (currTrial['cue_off']-currTrial['cue_on'])/1000, (currTrial['resp_off']-currTrial['resp_on'])/1000, None]
+			
+			# determine feedback received by participant
+			feedback_received = [currTrial['feedback_incorrect'], currTrial['feedback_correct']][int(currTrial['resp'] == currTrial['cresp'])]
+			
+			# update currEvent
+			currEvent = {'trial': np.repeat(currTrial['trial'],nrep), 'block': np.repeat(currTrial['block'],nrep), 'stimulus': ['fixation', 'cue', 'response', 'feedback'], 'onset': currOnsets, 'duration': currDurations, 'reaction_time': [None, currTrial['rt'], None, None], 'response': [None, currTrial['resp'], None, None], 'cresponse': [None, currTrial['cresp'], None, None], 'left_image': [None, currTrial['left_image'], None, None], 'right_image': [None, currTrial['right_image'], None, None], 'feedback_correct': [None, None, None, currTrial['feedback_correct']], 'feedback_incorrect': [None, None, None, currTrial['feedback_incorrect']], 'feedback_received': [None, None, None, feedback_received], 'reinforcement_ratio': [None, None, None, currTrial['reinforcement_ratio']]}
+			
+			# add currEvent df to dfEvent
+			dfEvent = dfEvent.append(pd.DataFrame.from_dict(currEvent), ignore_index = True)
+		
+		# return updated dfEvent
+		return(dfEvent)
+	
 	def idTrim(self, id):
 		""" Trim initials from a scan ID name """
 
 		# Prisma
 		if re.search('^(p[0-9][0-9][0-9])', id):
 			return id[:4]
-		# Verio/mMR
-		elif re.search('^([mv][0-9][0-9][0-9][0-9])', id):
+		# Verio/mMR/mr001
+		elif re.search('^([mvn][0-9][0-9][0-9][0-9])', id):
 			return id[:5]
 		else:
 			return id
@@ -510,10 +634,12 @@ class Response():
 		summaryFileName = '%s_%s_SummaryResp.txt' % (scannerID_initialsOmit, self.outputName[self.currTaskType])
 
 		# Write output files
-		respOutput['event'].to_csv('/'.join([os.getcwd(), eventFileName]))
-		print('Event file written: %s ' % ('/'.join([os.getcwd(), eventFileName])))
-		respOutput['summary'].to_csv('/'.join([os.getcwd(), summaryFileName]))
-		print('Summary file written: %s ' % ('/'.join([os.getcwd(), summaryFileName])))
+		if respOutput['event'] is not None:
+			respOutput['event'].to_csv('/'.join([os.getcwd(), eventFileName]))
+			print('Event file written: %s ' % ('/'.join([os.getcwd(), eventFileName])))
+		if respOutput['summary'] is not None:
+			respOutput['summary'].to_csv('/'.join([os.getcwd(), summaryFileName]))
+			print('Summary file written: %s ' % ('/'.join([os.getcwd(), summaryFileName])))
 
 	def writeRespMat(self, respOutput):
 		""" Write .mat file that can be read into SPM single-subject design matrix """
