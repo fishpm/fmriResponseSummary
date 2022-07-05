@@ -600,7 +600,10 @@ class Response():
 			currDurations = [(currTrial['fix_off']-currTrial['fix_on'])/1000, (currTrial['cue_off']-currTrial['cue_on'])/1000, (currTrial['resp_off']-currTrial['resp_on'])/1000, None]
 			
 			# determine feedback received by participant
-			feedback_received = [currTrial['feedback_incorrect'], currTrial['feedback_correct']][int(currTrial['resp'] == currTrial['cresp'])]
+			if currTrial['resp'] is None:
+				feedback_received = 'Blank' # non-response receives "Blank" feedback
+			else:
+				feedback_received = [currTrial['feedback_incorrect'], currTrial['feedback_correct']][int(currTrial['resp'] == currTrial['cresp'])]
 			
 			# update currEvent
 			currEvent = {'trial': np.repeat(currTrial['trial'],nrep), 'block': np.repeat(currTrial['block'],nrep), 'stimulus': ['fixation', 'cue', 'response', 'feedback'], 'onset': currOnsets, 'duration': currDurations, 'reaction_time': [None, currTrial['rt'], None, None], 'response': [None, currTrial['resp'], None, None], 'cresponse': [None, currTrial['cresp'], None, None], 'left_image': [None, currTrial['left_image'], None, None], 'right_image': [None, currTrial['right_image'], None, None], 'feedback_correct': [None, None, None, currTrial['feedback_correct']], 'feedback_incorrect': [None, None, None, currTrial['feedback_incorrect']], 'feedback_received': [None, None, None, feedback_received], 'reinforcement_ratio': [None, None, None, currTrial['reinforcement_ratio']]}
