@@ -12,7 +12,7 @@
 
 ### Tasks supported
 ## Hariri Faces Task (20180109)
-## Reward Task (20180109)
+## Reward Task (20180109); updated 20220706
 ## Alcohol Task (20180109)
 ## PSAP (incomplete)
 ## RLP (20220628)
@@ -235,6 +235,122 @@ class Response():
 
 	def evalFaces(self, fullFileName):
 		""" Evaluate faces behavioral response file """
+		
+		# list of stimuli
+		stimulus_list = ['Shapes', 'Fear', 'Neutral', 'Angry', 'Surprise']
+		
+		# column names
+		colEvents = ['trial', 'block', 'block_num', 'block_subtype', 'stimulus', 'onset', 'duration', 'reaction_time', 'response', 'cresponse', 'file']
+		
+		# variables to keep as strings
+		keepString = {'TrialCondition': 'block', 'Procedure: (' + '|'.join(stimulus_list) + ')(BlockProc|FacesBlock)': 'block', 'Procedure: (' + '|'.join(stimulus_list) + ')(Trial|Faces)Proc': 'stimulus', 'Experiment': 'run_type', 'Stimulus': 'file'}
+		
+		# variables to keep as numeric
+		keepNumeric = {'(' + '|'.join(stimulus_list) + ')(TrialProbe|FacesProcProbe)(.OnsetTime)': 'stim_on', '^(' + '|'.join(stimulus_list) + ')(TrialProbe|FacesProcProbe)(.RT)': 'rt', '^(' + '|'.join(stimulus_list) + ')(TrialProbe|FacesProcProbe)(.RESP)': 'resp', '^(' + '|'.join(stimulus_list) + ')(TrialProbe|FacesProcProbe)(.CRESP)': 'cresp', '^(' + '|'.join(stimulus_list) + ')(TrialFixation|FacesProcFix)(.OnsetTime)': 'fix_on', '^(FacesRunBlockList)': 'block_num', '^(Match)(Shapes|Faces)(.OnsetTime)': 'onset'}
+		
+		dfEvent = pd.DataFrame(columns = colEvents) # event dataframe
+		trialCounter = 0
+		currTrial = {'trial': trialCounter} # current trial information
+	
+		# Process fMRI behavioral file
+		with io.open(fullFileName,'r', encoding='utf-16') as f:
+			for line in f:
+				
+				l = str(line.rstrip()).lstrip()
+				
+				# signals end of paradigm
+				if l=='Procedure: FacesRunProc':
+					f.close()
+					dfEvent = self.eventFaces({}, dfEvent, trialCounter)
+					return {'event': dfEvent, 'summary': None}
+				
+				# new trial identifier
+				if re.search('^(\*\*\* LogFrame Start \*\*\*)',l):
+					trialCounter += 1
+					if trialCounter > 1:
+						dfEvent, trialCounter = self.eventFaces(currTrial, dfEvent, trialCounter)
+					
+					currTrial = {'trial': trialCounter}
+				
+				# pull relevant field for string and numeric values of interest
+				strCheck = [v for k,v in keepString.items() if re.search(k,l)]
+				numCheck = [v for k,v in keepNumeric.items() if re.search(k,l)]
+				
+				if strCheck:
+					l_split = l.split(': ')
+					currTrial[''.join(strCheck)] = l_split[1]
+				elif numCheck:
+					l_split = l.split(': ')
+					if len(l_split) == 2:
+						currTrial[''.join(numCheck)] = int(l_split[1])
+						if ''.join(numCheck) == 'rt' and currTrial[''.join(numCheck)] == 0:
+							currTrial[''.join(numCheck)] = None
+					else:
+						currTrial[''.join(numCheck)] = None
+		
+		# Return event data frame (summary not written)
+		return {'event': dfEvent, 'summary': None}
+	
+	def eventFaces(self, currTrial, dfEvent, trialCounter):
+		""" Organize current trial and update dfEvent """
+		
+		stimulus_list = ['Shapes', 'Fear', 'Neutral', 'Angry', 'Surprise']
+		
+		# processing end of paradigm
+		if len(currTrial) == 0:
+			
+			# convert onsets to seconds
+			dfEvent['onset'] = (dfEvent['onset']-dfEvent.loc[0,'onset'])/1000
+			
+			# calculate durations
+			for elem in dfEvent.index:
+				if elem < len(dfEvent.index)-1:
+					dfEvent.loc[elem,'duration'] = dfEvent.loc[elem+1,'onset']-dfEvent.loc[elem,'onset']
+				else:
+					dfEvent.loc[elem,'duration'] = 2
+			
+			# return updated dfEvent (trialCounter need not be returned)
+			return(dfEvent)		
+		
+		nrep = 2 # faces trials comprise four events (stimulus, fixation)
+		
+		# "match shapes" and "match faces" events handled differently
+		if all([i in currTrial.keys() for i in ['trial', 'block', 'block_num', 'onset']]):
+			#currTrial['outcome'] = 'Instruction'
+			if re.search('Shapes', currTrial['block']):
+				currTrial['stimulus'] = 'MatchShapes'
+			else:
+				currTrial['stimulus'] = 'MatchFaces'
+			
+			dfEvent = dfEvent.append(pd.DataFrame(currTrial, index = [0]), ignore_index = True)
+			dfEvent.loc[dfEvent['block'].isnull(), 'block'] = currTrial['block']
+			dfEvent.loc[dfEvent['block_num'].isnull(), 'block_num'] = currTrial['block_num']
+			dfEvent.loc[dfEvent.index[-1], 'trial'] = None
+			
+			# update row order; guess number/press finger comes after block trials in paradigm file
+			currBlockIdx = dfEvent[dfEvent['block_num'] == currTrial['block_num']].index
+			prevBlockIdx = dfEvent[dfEvent['block_num'] != currTrial['block_num']].index
+			dfEvent.loc[currBlockIdx[-1],'block'] = 'Instruction'
+			dfEvent = dfEvent.reindex(list(prevBlockIdx) + [currBlockIdx[-1]] + list(currBlockIdx[:-1]))
+			dfEvent = dfEvent.reset_index(drop=True)
+			trialCounter -= 1
+			
+		else:
+			
+			currOnsets = [currTrial['stim_on'], currTrial['fix_on']]
+			currTrial['block_subtype'] = ''.join([idx for idx in stimulus_list if re.search(idx,currTrial['stimulus'])])
+			
+			# update currEvent
+			currEvent = {'trial': np.repeat(currTrial['trial'],nrep), 'block': np.repeat(currTrial['block'],nrep), 'block_subtype': np.repeat(currTrial['block_subtype'],nrep), 'stimulus': ['stimulus', 'fixation'], 'onset': currOnsets, 'duration': np.repeat(None,nrep), 'reaction_time': [currTrial['rt'], None], 'response': [currTrial['resp'], None], 'cresponse': [currTrial['cresp'], None], 'file': currTrial['file']}
+		
+			# add currEvent to dfEvent
+			dfEvent = dfEvent.append(pd.DataFrame.from_dict(currEvent), ignore_index = True)
+		
+		# return updated dfEvent
+		return(dfEvent, trialCounter)
+	
+	def evalFaces_old(self, fullFileName):
+		""" Evaluate faces behavioral response file """
 
 		# Update attribute to incorporate version of faces task (i.e., 1,2,3, or 4)
 		self.outputName['Faces'] = ''.join(['faces', self.currSourceFile.split('HaririFaces')[1][0]])
@@ -321,8 +437,147 @@ class Response():
 		# Return even and summary data frames
 		return {'event': dfEvent, 'summary': dfSummary}
 
-	def evalReward(self, fullFileName):
+	def evalReward(self,fullFileName):
 		""" Evaluate reward behavioral response file """
+		
+		# column names
+		colEvents = ['trial', 'block', 'block_num', 'stimulus', 'onset', 'duration', 'reaction_time', 'response', 'high_num', 'low_num', 'num_shown', 'outcome', 'feedback']
+		
+		# variables to keep as strings
+		keepString = {'TrialCondition': 'subtype', 'lowNum': 'low_num', 'highNum': 'high_num', '(Reward|Loss|Control)BlockProc': 'block'}
+		
+		# variables to keep as numeric
+		keepNumeric = {'^(GamStim.OnsetTime|ControlStim.OnsetTime)': 'guess_on', '^(GamStim.RT|ControlStim.RT)': 'rt', '^(GamStim.RESP|ControlStim.RESP)': 'resp', '^(Feedback[RL]{1}.OnsetTime|ControlFeedbackStar.OnsetTime)': 'num_on', '^(Feedback(Up|Down)Arrow.OnsetTime|ControlFeedbackCircle.OnsetTime)': 'feed_on', 'GuessingFixation.OnsetTime': 'fix_on', '^(GuessingRunBlockList)': 'block_num', '^(GuessNumber.OnsetTime|PressButton.OnsetTime)': 'onset'}
+		
+		# feedback dictionary
+		feedbackDict = {'Up': 'up_arrow', 'Down': 'down_arrow', 'Circle': 'circle'}
+		
+		dfEvent = pd.DataFrame(columns = colEvents) # event dataframe
+		trialCounter = 0
+		currTrial = {'trial': trialCounter} # current trial information
+	
+		# Process fMRI behavioral file
+		with io.open(fullFileName,'r', encoding='utf-16') as f:
+			for line in f:
+				
+				l = str(line.rstrip()).lstrip()
+				
+				# signals end of paradigm
+				if l=='Procedure: GuesingRunProc':
+					f.close()
+					dfEvent = self.eventReward({}, dfEvent, trialCounter)
+					return {'event': dfEvent, 'summary': None}
+				
+				# new trial identifier
+				if re.search('^(\*\*\* LogFrame Start \*\*\*)',l):
+					trialCounter += 1
+					if trialCounter > 1:
+						dfEvent, trialCounter = self.eventReward(currTrial, dfEvent, trialCounter)
+					
+					currTrial = {'trial': trialCounter}
+				
+				# pull relevant field for string and numeric values of interest
+				strCheck = [v for k,v in keepString.items() if re.search(k,l)]
+				numCheck = [v for k,v in keepNumeric.items() if re.search(k,l)]
+				
+				if strCheck:
+					l_split = l.split(': ')
+					currTrial[''.join(strCheck)] = l_split[1]
+					if re.search('(Reward|Loss|Control)BlockProc',l_split[1]):
+						currTrial[''.join(strCheck)] = l_split[1].split('BlockProc')[0]
+				elif numCheck:
+					l_split = l.split(': ')
+					if len(l_split) == 2:
+						currTrial[''.join(numCheck)] = int(l_split[1])
+						if ''.join(numCheck) == 'rt' and currTrial[''.join(numCheck)] == 0:
+							currTrial[''.join(numCheck)] = None
+						if ''.join(numCheck) == 'feed_on':
+							currTrial['feedback'] = ''.join([v for k,v in feedbackDict.items() if re.search(k,l_split[0])])
+					else:
+						currTrial[''.join(numCheck)] = None
+		
+		# Return event data frame (summary not written)
+		return {'event': dfEvent, 'summary': None}
+	
+	def eventReward(self,currTrial, dfEvent, trialCounter):
+		""" Organize current trial and update dfEvent """
+		
+		# processing end of paradigm
+		if len(currTrial) == 0:
+			
+			# convert onsets to seconds
+			dfEvent['onset'] = (dfEvent['onset']-dfEvent.loc[0,'onset'])/1000
+			
+			# calculate durations
+			for elem in dfEvent.index:
+				if elem < len(dfEvent.index)-1:
+					dfEvent.loc[elem,'duration'] = dfEvent.loc[elem+1,'onset']-dfEvent.loc[elem,'onset']
+				else:
+					dfEvent.loc[elem,'duration'] = 3
+			
+			# return updated dfEvent (trialCounter need not be returned)
+			return(dfEvent)		
+		
+		nrep = 4 # reward trials comprise four events (guess, number, feedback, fixation)
+		
+		# "guess number" and "press finger" events handled differently
+		if all([i in currTrial.keys() for i in ['trial', 'block', 'block_num', 'onset']]):
+			
+			#currTrial['outcome'] = 'Instruction'
+			if currTrial['block'] in ['Reward','Loss']:
+				currTrial['stimulus'] = 'GuessNumber'
+			elif currTrial['block'] == 'Control':
+				currTrial['stimulus'] = 'PressFinger'
+			
+			dfEvent = dfEvent.append(pd.DataFrame(currTrial, index = [0]), ignore_index = True)
+			dfEvent.loc[dfEvent['block'].isnull(), 'block'] = currTrial['block']
+			dfEvent.loc[dfEvent['block_num'].isnull(), 'block_num'] = currTrial['block_num']
+			dfEvent.loc[dfEvent.index[-1], 'trial'] = None
+			
+			# update row order; guess number/press finger comes after block trials in paradigm file
+			currBlockIdx = dfEvent[dfEvent['block_num'] == currTrial['block_num']].index
+			prevBlockIdx = dfEvent[dfEvent['block_num'] != currTrial['block_num']].index
+			dfEvent.loc[currBlockIdx[-1],'block'] = 'Instruction'
+			dfEvent = dfEvent.reindex(list(prevBlockIdx) + [currBlockIdx[-1]] + list(currBlockIdx[:-1]))
+			dfEvent = dfEvent.reset_index(drop=True)
+			trialCounter -= 1
+			
+		else:
+			
+			currOnsets = [currTrial['guess_on'], currTrial['num_on'], currTrial['feed_on'], currTrial['fix_on']]
+			
+			if currTrial['subtype'] == 'Reward' and currTrial['resp']:
+				currTrial['num_shown'] = [currTrial['low_num'], currTrial['high_num']][currTrial['resp']==3]
+			elif currTrial['subtype'] == 'Loss' and currTrial['resp']:
+				currTrial['num_shown'] = [currTrial['low_num'], currTrial['high_num']][currTrial['resp']==2]
+			elif currTrial['subtype'] == 'Control':
+				currTrial['high_num'] = None
+				currTrial['low_num'] = None
+				if currTrial['resp']:
+					currTrial['num_shown'] = '*'
+			elif not currTrial['resp']:
+				currTrial['num_shown'] = '---'
+				currTrial['feedback'] = '---'
+			
+			if currTrial['subtype'] in ['Reward','Loss']:
+				currTrial['trial_type'] = 'guess'
+			else:
+				currTrial['trial_type'] = 'press'
+			
+			# update currEvent
+			currEvent = {'trial': np.repeat(currTrial['trial'],nrep), 'block': np.repeat(None,nrep), 'stimulus': ['guess', 'number', 'feedback', 'fixation'], 'onset': currOnsets, 'duration': np.repeat(None,nrep), 'reaction_time': [currTrial['rt'], None, None, None], 'response': [currTrial['resp'], None, None, None], 'num_shown': [None, currTrial['num_shown'], None, None], 'high_num': [None, currTrial['high_num'], None, None], 'low_num': [None, currTrial['low_num'], None, None], 'outcome': [None, None, currTrial['subtype'], None], 'feedback': [None, None, currTrial['feedback'], None]}
+		
+			# add currEvent to dfEvent
+			dfEvent = dfEvent.append(pd.DataFrame.from_dict(currEvent), ignore_index = True)
+		
+		# return updated dfEvent
+		return(dfEvent, trialCounter)
+	
+	
+	
+	def evalReward_old(self, fullFileName):
+		""" Evaluate reward behavioral response file """
+		""" BIDS-related update (July 2022) highlighted need to change format of reward event file. Old function kept in case need be used. PMF 06-07-2022 """
 
 		colEvents = ['type', 'subtype', 'RT', 'resp', 'win_loss', 'omitted', 'pressFixation']
 		colSummary = ['RT', 'Omit', 'Omit_frac', 'Wins', 'Losses']
@@ -638,7 +893,7 @@ class Response():
 
 		# Write output files
 		if respOutput['event'] is not None:
-			respOutput['event'].to_csv('/'.join([os.getcwd(), eventFileName]))
+			respOutput['event'].to_csv('/'.join([os.getcwd(), eventFileName]), index = False)
 			print('Event file written: %s ' % ('/'.join([os.getcwd(), eventFileName])))
 		if respOutput['summary'] is not None:
 			respOutput['summary'].to_csv('/'.join([os.getcwd(), summaryFileName]))
