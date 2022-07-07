@@ -240,17 +240,17 @@ class Response():
 		stimulus_list = ['Shapes', 'Fear', 'Neutral', 'Angry', 'Surprise']
 		
 		# column names
-		colEvents = ['trial', 'block', 'block_num', 'block_subtype', 'stimulus', 'onset', 'duration', 'reaction_time', 'response', 'cresponse', 'file']
+		colEvents = ['block_name', 'block_num', 'block_subtype', 'trial_num', 'stimulus_type', 'onset', 'duration', 'response_time', 'response', 'correct_response', 'stimulus_file']
 		
 		# variables to keep as strings
-		keepString = {'TrialCondition': 'block', 'Procedure: (' + '|'.join(stimulus_list) + ')(BlockProc|FacesBlock)': 'block', 'Procedure: (' + '|'.join(stimulus_list) + ')(Trial|Faces)Proc': 'stimulus', 'Experiment': 'run_type', 'Stimulus': 'file'}
+		keepString = {'TrialCondition': 'block_name', 'Procedure: (' + '|'.join(stimulus_list) + ')(BlockProc|FacesBlock)': 'block_name', 'Procedure: (' + '|'.join(stimulus_list) + ')(Trial|Faces)Proc': 'stimulus_type', 'Experiment': 'run_type', 'Stimulus': 'stimulus_file'}
 		
 		# variables to keep as numeric
 		keepNumeric = {'(' + '|'.join(stimulus_list) + ')(TrialProbe|FacesProcProbe)(.OnsetTime)': 'stim_on', '^(' + '|'.join(stimulus_list) + ')(TrialProbe|FacesProcProbe)(.RT)': 'rt', '^(' + '|'.join(stimulus_list) + ')(TrialProbe|FacesProcProbe)(.RESP)': 'resp', '^(' + '|'.join(stimulus_list) + ')(TrialProbe|FacesProcProbe)(.CRESP)': 'cresp', '^(' + '|'.join(stimulus_list) + ')(TrialFixation|FacesProcFix)(.OnsetTime)': 'fix_on', '^(FacesRunBlockList)': 'block_num', '^(Match)(Shapes|Faces)(.OnsetTime)': 'onset'}
 		
 		dfEvent = pd.DataFrame(columns = colEvents) # event dataframe
 		trialCounter = 0
-		currTrial = {'trial': trialCounter} # current trial information
+		currTrial = {'trial_num': trialCounter} # current trial information
 	
 		# Process fMRI behavioral file
 		with io.open(fullFileName,'r', encoding='utf-16') as f:
@@ -262,6 +262,7 @@ class Response():
 				if l=='Procedure: FacesRunProc':
 					f.close()
 					dfEvent = self.eventFaces({}, dfEvent, trialCounter)
+					dfEvent.replace(np.nan,'n/a',inplace=True)
 					return {'event': dfEvent, 'summary': None}
 				
 				# new trial identifier
@@ -270,7 +271,7 @@ class Response():
 					if trialCounter > 1:
 						dfEvent, trialCounter = self.eventFaces(currTrial, dfEvent, trialCounter)
 					
-					currTrial = {'trial': trialCounter}
+					currTrial = {'trial_num': trialCounter}
 				
 				# pull relevant field for string and numeric values of interest
 				strCheck = [v for k,v in keepString.items() if re.search(k,l)]
@@ -315,22 +316,22 @@ class Response():
 		nrep = 2 # faces trials comprise four events (stimulus, fixation)
 		
 		# "match shapes" and "match faces" events handled differently
-		if all([i in currTrial.keys() for i in ['trial', 'block', 'block_num', 'onset']]):
+		if all([i in currTrial.keys() for i in ['trial_num', 'block_name', 'block_num', 'onset']]):
 			#currTrial['outcome'] = 'Instruction'
-			if re.search('Shapes', currTrial['block']):
-				currTrial['stimulus'] = 'MatchShapes'
+			if re.search('Shapes', currTrial['block_name']):
+				currTrial['stimulus_type'] = 'MatchShapes'
 			else:
-				currTrial['stimulus'] = 'MatchFaces'
+				currTrial['stimulus_type'] = 'MatchFaces'
 			
 			dfEvent = dfEvent.append(pd.DataFrame(currTrial, index = [0]), ignore_index = True)
-			dfEvent.loc[dfEvent['block'].isnull(), 'block'] = currTrial['block']
+			dfEvent.loc[dfEvent['block_name'].isnull(), 'block_name'] = currTrial['block_name']
 			dfEvent.loc[dfEvent['block_num'].isnull(), 'block_num'] = currTrial['block_num']
-			dfEvent.loc[dfEvent.index[-1], 'trial'] = None
+			dfEvent.loc[dfEvent.index[-1], 'trial_num'] = None
 			
 			# update row order; guess number/press finger comes after block trials in paradigm file
 			currBlockIdx = dfEvent[dfEvent['block_num'] == currTrial['block_num']].index
 			prevBlockIdx = dfEvent[dfEvent['block_num'] != currTrial['block_num']].index
-			dfEvent.loc[currBlockIdx[-1],'block'] = 'Instruction'
+			dfEvent.loc[currBlockIdx[-1],'block_name'] = 'Instruction'
 			dfEvent = dfEvent.reindex(list(prevBlockIdx) + [currBlockIdx[-1]] + list(currBlockIdx[:-1]))
 			dfEvent = dfEvent.reset_index(drop=True)
 			trialCounter -= 1
@@ -338,10 +339,10 @@ class Response():
 		else:
 			
 			currOnsets = [currTrial['stim_on'], currTrial['fix_on']]
-			currTrial['block_subtype'] = ''.join([idx for idx in stimulus_list if re.search(idx,currTrial['stimulus'])])
+			currTrial['block_subtype'] = ''.join([idx for idx in stimulus_list if re.search(idx,currTrial['stimulus_type'])])
 			
 			# update currEvent
-			currEvent = {'trial': np.repeat(currTrial['trial'],nrep), 'block': np.repeat(currTrial['block'],nrep), 'block_subtype': np.repeat(currTrial['block_subtype'],nrep), 'stimulus': ['stimulus', 'fixation'], 'onset': currOnsets, 'duration': np.repeat(None,nrep), 'reaction_time': [currTrial['rt'], None], 'response': [currTrial['resp'], None], 'cresponse': [currTrial['cresp'], None], 'file': currTrial['file']}
+			currEvent = {'trial_num': np.repeat(currTrial['trial_num'],nrep), 'block_name': np.repeat(currTrial['block_name'],nrep), 'block_subtype': np.repeat(currTrial['block_subtype'],nrep), 'stimulus_type': ['stimulus', 'fixation'], 'onset': currOnsets, 'duration': np.repeat('n/a',nrep), 'response_time': [currTrial['rt'], 'n/a'], 'response': [currTrial['resp'], 'n/a'], 'correct_response': [currTrial['cresp'], 'n/a'], 'stimulus_file': currTrial['stimulus_file']}
 		
 			# add currEvent to dfEvent
 			dfEvent = dfEvent.append(pd.DataFrame.from_dict(currEvent), ignore_index = True)
@@ -441,10 +442,10 @@ class Response():
 		""" Evaluate reward behavioral response file """
 		
 		# column names
-		colEvents = ['trial', 'block', 'block_num', 'stimulus', 'onset', 'duration', 'reaction_time', 'response', 'high_num', 'low_num', 'num_shown', 'outcome', 'feedback']
+		colEvents = ['block_name', 'block_num', 'trial_num', 'stimulus_type', 'onset', 'duration', 'response_time', 'response', 'high_num', 'low_num', 'num_shown', 'outcome', 'feedback']
 		
 		# variables to keep as strings
-		keepString = {'TrialCondition': 'subtype', 'lowNum': 'low_num', 'highNum': 'high_num', '(Reward|Loss|Control)BlockProc': 'block'}
+		keepString = {'TrialCondition': 'subtype', 'lowNum': 'low_num', 'highNum': 'high_num', '(Reward|Loss|Control)BlockProc': 'block_name'}
 		
 		# variables to keep as numeric
 		keepNumeric = {'^(GamStim.OnsetTime|ControlStim.OnsetTime)': 'guess_on', '^(GamStim.RT|ControlStim.RT)': 'rt', '^(GamStim.RESP|ControlStim.RESP)': 'resp', '^(Feedback[RL]{1}.OnsetTime|ControlFeedbackStar.OnsetTime)': 'num_on', '^(Feedback(Up|Down)Arrow.OnsetTime|ControlFeedbackCircle.OnsetTime)': 'feed_on', 'GuessingFixation.OnsetTime': 'fix_on', '^(GuessingRunBlockList)': 'block_num', '^(GuessNumber.OnsetTime|PressButton.OnsetTime)': 'onset'}
@@ -454,7 +455,7 @@ class Response():
 		
 		dfEvent = pd.DataFrame(columns = colEvents) # event dataframe
 		trialCounter = 0
-		currTrial = {'trial': trialCounter} # current trial information
+		currTrial = {'trial_num': trialCounter} # current trial information
 	
 		# Process fMRI behavioral file
 		with io.open(fullFileName,'r', encoding='utf-16') as f:
@@ -466,6 +467,7 @@ class Response():
 				if l=='Procedure: GuesingRunProc':
 					f.close()
 					dfEvent = self.eventReward({}, dfEvent, trialCounter)
+					dfEvent.replace(np.nan,'n/a',inplace=True)
 					return {'event': dfEvent, 'summary': None}
 				
 				# new trial identifier
@@ -474,7 +476,7 @@ class Response():
 					if trialCounter > 1:
 						dfEvent, trialCounter = self.eventReward(currTrial, dfEvent, trialCounter)
 					
-					currTrial = {'trial': trialCounter}
+					currTrial = {'trial_num': trialCounter}
 				
 				# pull relevant field for string and numeric values of interest
 				strCheck = [v for k,v in keepString.items() if re.search(k,l)]
@@ -521,23 +523,26 @@ class Response():
 		nrep = 4 # reward trials comprise four events (guess, number, feedback, fixation)
 		
 		# "guess number" and "press finger" events handled differently
-		if all([i in currTrial.keys() for i in ['trial', 'block', 'block_num', 'onset']]):
+		if all([i in currTrial.keys() for i in ['trial_num', 'block_name', 'block_num', 'onset']]):
 			
-			#currTrial['outcome'] = 'Instruction'
-			if currTrial['block'] in ['Reward','Loss']:
-				currTrial['stimulus'] = 'GuessNumber'
-			elif currTrial['block'] == 'Control':
-				currTrial['stimulus'] = 'PressFinger'
+			if currTrial['block_name'] in ['Reward','Loss']:
+				currTrial['stimulus_type'] = 'GuessNumber'
+			elif currTrial['block_name'] == 'Control':
+				currTrial['stimulus_type'] = 'PressFinger'
 			
 			dfEvent = dfEvent.append(pd.DataFrame(currTrial, index = [0]), ignore_index = True)
-			dfEvent.loc[dfEvent['block'].isnull(), 'block'] = currTrial['block']
-			dfEvent.loc[dfEvent['block_num'].isnull(), 'block_num'] = currTrial['block_num']
-			dfEvent.loc[dfEvent.index[-1], 'trial'] = None
+			dfEvent.loc[dfEvent['block_name']=='n/a', 'block_name'] = currTrial['block_name']
+			print(dfEvent)
+			print(currTrial['block_num'])
+			dfEvent.loc[dfEvent['block_num'].isna(), 'block_num'] = currTrial['block_num']
+			print(dfEvent)
+			dfEvent.loc[dfEvent.index[-1], 'trial_num'] = 'n/a'
 			
 			# update row order; guess number/press finger comes after block trials in paradigm file
 			currBlockIdx = dfEvent[dfEvent['block_num'] == currTrial['block_num']].index
 			prevBlockIdx = dfEvent[dfEvent['block_num'] != currTrial['block_num']].index
-			dfEvent.loc[currBlockIdx[-1],'block'] = 'Instruction'
+			dfEvent.loc[currBlockIdx[-1],'block_name'] = 'Instruction'
+			#print(list(prevBlockIdx) + [currBlockIdx[-1]] + list(currBlockIdx[:-1]))
 			dfEvent = dfEvent.reindex(list(prevBlockIdx) + [currBlockIdx[-1]] + list(currBlockIdx[:-1]))
 			dfEvent = dfEvent.reset_index(drop=True)
 			trialCounter -= 1
@@ -564,8 +569,11 @@ class Response():
 			else:
 				currTrial['trial_type'] = 'press'
 			
+			if currTrial['rt'] is not None:
+				currTrial['rt'] = currTrial['rt']/1000
+			
 			# update currEvent
-			currEvent = {'trial': np.repeat(currTrial['trial'],nrep), 'block': np.repeat(None,nrep), 'stimulus': ['guess', 'number', 'feedback', 'fixation'], 'onset': currOnsets, 'duration': np.repeat(None,nrep), 'reaction_time': [currTrial['rt'], None, None, None], 'response': [currTrial['resp'], None, None, None], 'num_shown': [None, currTrial['num_shown'], None, None], 'high_num': [None, currTrial['high_num'], None, None], 'low_num': [None, currTrial['low_num'], None, None], 'outcome': [None, None, currTrial['subtype'], None], 'feedback': [None, None, currTrial['feedback'], None]}
+			currEvent = {'trial_num': np.repeat(currTrial['trial_num'],nrep), 'block_name': np.repeat('n/a',nrep), 'stimulus_type': ['guess', 'number', 'feedback', 'fixation'], 'onset': currOnsets, 'duration': np.repeat('n/a',nrep), 'response_time': [currTrial['rt'], 'n/a', 'n/a', 'n/a'], 'response': [currTrial['resp'], 'n/a', 'n/a', 'n/a'], 'num_shown': ['n/a', currTrial['num_shown'], 'n/a', 'n/a'], 'high_num': ['n/a', currTrial['high_num'], 'n/a', 'n/a'], 'low_num': ['n/a', currTrial['low_num'], 'n/a', 'n/a'], 'outcome': ['n/a', 'n/a', currTrial['subtype'], 'n/a'], 'feedback': ['n/a', 'n/a', currTrial['feedback'], 'n/a']}
 		
 			# add currEvent to dfEvent
 			dfEvent = dfEvent.append(pd.DataFrame.from_dict(currEvent), ignore_index = True)
@@ -747,7 +755,7 @@ class Response():
 		""" Evaluate RLP behavioral response file """
 
 		# column names
-		colEvents = ['trial', 'block', 'stimulus', 'onset', 'duration', 'reaction_time', 'response', 'cresponse', 'left_image', 'right_image', 'feedback_correct', 'feedback_incorrect', 'feedback_received', 'reinforcement_ratio']
+		colEvents = ['block_num', 'trial_num', 'stimulus_type', 'onset', 'duration', 'response_time', 'response', 'correct_response', 'left_image', 'right_image', 'feedback_correct', 'feedback_incorrect', 'feedback_received', 'reinforcement_ratio']
 		
 		# variables to keep a strings
 		keepString = {'^(LeftImage)': 'left_image', '^(RightImage)': 'right_image', '^(FeedbackCorrect)': 'feedback_correct', '^(FeedbackIncorrect)': 'feedback_incorrect'}
@@ -759,7 +767,7 @@ class Response():
 		dfEvent = pd.DataFrame(columns = colEvents) # event dataframe
 		trialCounter = 0
 		absoluteStart = None # time point (in ms) when paradigm starts
-		currTrial = {'trial': trialCounter} # current trial information
+		currTrial = {'trial_num': trialCounter} # current trial information
 
 		# Process fMRI behavioral file
 		with io.open(fullFileName,'r', encoding='utf-16') as f:
@@ -772,7 +780,7 @@ class Response():
 					trialCounter += 1
 					if trialCounter > 1:
 						dfEvent = self.eventRLP(currTrial, dfEvent, absoluteStart)
-					currTrial = {'trial': trialCounter}
+					currTrial = {'trial_num': trialCounter}
 				
 				# pull relevant field for string and numeric values of interest
 				strCheck = [v for k,v in keepString.items() if re.search(k,l)]
@@ -797,28 +805,28 @@ class Response():
 				if re.search('^(Running)',l):
 					l_split = l.split(': ')
 					if re.search('Block(.*)List[0-9]{3,4}',l_split[1]):
-						currTrial['block'] = int(re.search('Block(.*)List',l_split[1]).group(1))
+						currTrial['block_num'] = int(re.search('Block(.*)List',l_split[1]).group(1))
 						currTrial['reinforcement_ratio'] = int(re.search('Block[0-9]{1}List(.*)',l_split[1]).group(1))
 				
 				# onset of built in break periods
 				if re.search('BreakText[0-9]{1}.OnsetTime',l):
 					dfEvent = self.eventRLP(currTrial, dfEvent, absoluteStart)
 					trialCounter += 1
-					currTrial['trial'] = trialCounter
-					currTrial = {k:v for k,v in currTrial.items() if k in ['trial','block']}
+					currTrial['trial_num'] = trialCounter
+					currTrial = {k:v for k,v in currTrial.items() if k in ['trial_num','block_num']}
 					l_split = l.split(': ')
 					currTrial['onset'] = int(l_split[1])
-					currTrial['stimulus'] = 'break'
+					currTrial['stimulus_type'] = 'break'
 				
 				# alert to participant that break period is about to end
 				if re.search('ScannerWaitPreBlock[0-9]{1}.OnsetTime',l):
 					dfEvent = self.eventRLP(currTrial, dfEvent, absoluteStart)
 					trialCounter += 1
-					currTrial['trial'] = trialCounter
-					currTrial = {k:v for k,v in currTrial.items() if k in ['trial','block']}
+					currTrial['trial_num'] = trialCounter
+					currTrial = {k:v for k,v in currTrial.items() if k in ['trial_num','block_num']}
 					l_split = l.split(': ')
 					currTrial['onset'] = int(l_split[1])
-					currTrial['stimulus'] = 'getReady'
+					currTrial['stimulus_type'] = 'getReady'
 		
 		# compute durations
 		nanIdx = np.where(np.isnan(dfEvent['duration']))
@@ -829,6 +837,8 @@ class Response():
 				dfEvent.at[elem,'duration'] = 30
 		
 		# Return event data frame (summary not written)
+		f.close()
+		dfEvent.replace(np.nan,'n/a',inplace=True)
 		return {'event': dfEvent, 'summary': None}
 
 	def eventRLP(self, currTrial, dfEvent, absoluteStart):
@@ -837,7 +847,7 @@ class Response():
 		nrep = 4 # rlp trials comprise four events (fixation, cue, response, feedback)
 		
 		# "break text" and "scanner wait" events handled differently
-		if all([i in currTrial.keys() for i in ['trial', 'block', 'onset', 'stimulus']]):
+		if all([i in currTrial.keys() for i in ['trial_num', 'block_num', 'onset', 'stimulus_type']]):
 			if 'ready_on' in currTrial.keys():
 				currTrial.pop('ready_on')
 			
@@ -853,6 +863,9 @@ class Response():
 			
 			# compute durations
 			currDurations = [(currTrial['fix_off']-currTrial['fix_on'])/1000, (currTrial['cue_off']-currTrial['cue_on'])/1000, (currTrial['resp_off']-currTrial['resp_on'])/1000, None]
+			# convert rt to seconds
+			if currTrial['rt'] is not None:
+				currTrial['rt'] = currTrial['rt']/1000
 			
 			# determine feedback received by participant
 			if currTrial['resp'] is None:
@@ -861,7 +874,7 @@ class Response():
 				feedback_received = [currTrial['feedback_incorrect'], currTrial['feedback_correct']][int(currTrial['resp'] == currTrial['cresp'])]
 			
 			# update currEvent
-			currEvent = {'trial': np.repeat(currTrial['trial'],nrep), 'block': np.repeat(currTrial['block'],nrep), 'stimulus': ['fixation', 'cue', 'response', 'feedback'], 'onset': currOnsets, 'duration': currDurations, 'reaction_time': [None, currTrial['rt'], None, None], 'response': [None, currTrial['resp'], None, None], 'cresponse': [None, currTrial['cresp'], None, None], 'left_image': [None, currTrial['left_image'], None, None], 'right_image': [None, currTrial['right_image'], None, None], 'feedback_correct': [None, None, None, currTrial['feedback_correct']], 'feedback_incorrect': [None, None, None, currTrial['feedback_incorrect']], 'feedback_received': [None, None, None, feedback_received], 'reinforcement_ratio': [None, None, None, currTrial['reinforcement_ratio']]}
+			currEvent = {'trial_num': np.repeat(currTrial['trial_num'],nrep), 'block_num': np.repeat(currTrial['block_num'],nrep), 'stimulus_type': ['fixation', 'cue', 'response', 'feedback'], 'onset': currOnsets, 'duration': currDurations, 'response_time': ['n/a', currTrial['rt'], 'n/a', 'n/a'], 'response': ['n/a', currTrial['resp'], 'n/a', 'n/a'], 'correct_response': ['n/a', currTrial['cresp'], 'n/a', 'n/a'], 'left_image': ['n/a', currTrial['left_image'], 'n/a', 'n/a'], 'right_image': ['n/a', currTrial['right_image'], 'n/a', 'n/a'], 'feedback_correct': ['n/a', 'n/a', 'n/a', currTrial['feedback_correct']], 'feedback_incorrect': ['n/a', 'n/a', 'n/a', currTrial['feedback_incorrect']], 'feedback_received': ['n/a', 'n/a', 'n/a', feedback_received], 'reinforcement_ratio': ['n/a', 'n/a', 'n/a', currTrial['reinforcement_ratio']]}
 			
 			# add currEvent df to dfEvent
 			dfEvent = dfEvent.append(pd.DataFrame.from_dict(currEvent), ignore_index = True)
@@ -888,12 +901,12 @@ class Response():
 		self.currTime = time.strftime('%c')
 
 		scannerID_initialsOmit = self.idTrim(self.currSubjID)
-		eventFileName = '%s_%s_EventResp.txt' % (scannerID_initialsOmit, self.outputName[self.currTaskType])
+		eventFileName = '%s_%s_EventResp.tsv' % (scannerID_initialsOmit, self.outputName[self.currTaskType])
 		summaryFileName = '%s_%s_SummaryResp.txt' % (scannerID_initialsOmit, self.outputName[self.currTaskType])
 
 		# Write output files
 		if respOutput['event'] is not None:
-			respOutput['event'].to_csv('/'.join([os.getcwd(), eventFileName]), index = False)
+			respOutput['event'].to_csv('/'.join([os.getcwd(), eventFileName]), index = False, sep = '\t')
 			print('Event file written: %s ' % ('/'.join([os.getcwd(), eventFileName])))
 		if respOutput['summary'] is not None:
 			respOutput['summary'].to_csv('/'.join([os.getcwd(), summaryFileName]))
