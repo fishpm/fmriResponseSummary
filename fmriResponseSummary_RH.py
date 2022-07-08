@@ -11,10 +11,10 @@
 ## python3 fmriResponseSummary_RH.py prisma (will process all files for all prisma scan folders)
 
 ### Tasks supported
-## Hariri Faces Task (20180109)
+## Hariri Faces Task (20180109); updated 20220707
 ## Reward Task (20180109); updated 20220706
 ## Alcohol Task (20180109)
-## PSAP (incomplete)
+## PSAP (20220708)
 ## RLP (20220628)
 
 ### Updates
@@ -51,8 +51,8 @@ class Response():
 		self.inputDict = {'processSingleFile': self.processSingleFile, 'processListFile': self.processListFile, 'processScanner': self.processScanner, 'processSubjID': self.processSubjID}
 
 		# Dictionary of methods for processing different task types
-		self.taskDict = {'VAS': self.evalAlcohol, 'Reward': self.evalReward, 'Faces': self.evalFaces, 'RLP': self.evalRLP}
-		self.outputName = {'VAS': 'alcohol', 'Reward': 'reward', 'Faces': 'faces', 'RLP': 'rlp'}
+		self.taskDict = {'VAS': self.evalAlcohol, 'Reward': self.evalReward, 'Faces': self.evalFaces, 'RLP': self.evalRLP, 'PSAP': self.evalPSAP}
+		self.outputName = {'VAS': 'alcohol', 'Reward': 'reward', 'Faces': 'faces', 'RLP': 'rlp', 'PSAP': 'psap'}
 
 		# MRI scanner name scheme
 		self.scannerNames = {'p': 'prisma', 'v': 'verio', 'm': 'mmr', 'n': 'mr001'}
@@ -62,7 +62,7 @@ class Response():
 
 		# Regexp for expected behavioral task file name structure
 		# self.allMatchTypes = r'^(VAS).*(.txt)$|^(faces[0-9].*(.txt)$|^(reward).*(.txt)$)'
-		self.allMatchTypes = r'^(VAS).*(.txt)$|^(HaririFaces[0-9]_dansk).*(.txt)$|^(Hariri_Reward_TC_dansk2_noTrigger).*(.txt)$|^(RLP).*(.txt)$'
+		self.allMatchTypes = r'^(VAS).*(.txt)$|^(HaririFaces[0-9]_dansk).*(.txt)$|^(Hariri_Reward_TC_dansk2_noTrigger).*(.txt)$|^(RLP).*(.txt)$|^(Events).*(.txt)$'
 
 		# Updated while processing inputs
 		self.currTaskType = ''
@@ -99,7 +99,13 @@ class Response():
 					else:
 						return ('processListFile', fullFilePath)
 			except UnicodeError:
-				return ('processListFile', fullFilePath)
+				try:
+					# PSAP file exception (BOM, not utf-16)
+					with open(fullFilePath, 'r') as f:
+						if re.search('(Time).*(Event).*(Number)', f.readline().rstrip()):
+							return ('processSingleFile', fullFilePath)
+				except UnicodeError:
+					return ('processListFile', fullFilePath)
 
 		# Check if input matches MRI scanner name
 		if input1 in [v for k,v in self.scannerNames.items()]:
@@ -210,18 +216,27 @@ class Response():
 			self.currSubjID = ''
 
 		# Extract two pieces of information from fMRI behavioral file
-		with open(fName, 'r', encoding='utf-16') as f:
-			for line in f:
-				if line.startswith('Experiment: '):
-					l = line.rstrip()
-					l_split = l.split(' ')
-					self.currTaskType = ''.join([idx for idx in self.taskDict.keys() if idx in l_split[1]])
-
-				# If subject ID has not been determined, use DataFile.Basename from file
-				if self.currSubjID == '' and line.startswith('DataFile.Basename'):
-					l = line.rstrip()
-					l_split = l.split(' ')
-					self.currSubjID = l_split[1]
+		try:
+			with open(fName, 'r', encoding='utf-16') as f:
+				for line in f:
+					if line.startswith('Experiment: '):
+						l = line.rstrip()
+						l_split = l.split(' ')
+						self.currTaskType = ''.join([idx for idx in self.taskDict.keys() if idx in l_split[1]])
+		
+					# If subject ID has not been determined, use DataFile.Basename from file
+					if self.currSubjID == '' and line.startswith('DataFile.Basename'):
+						l = line.rstrip()
+						l_split = l.split(' ')
+						self.currSubjID = l_split[1]
+		except UnicodeError:
+				try:
+					with open(fName, 'r') as f:
+						if re.search('(Time).*(Event).*(Number)', f.readline().rstrip()):
+							print('here i am')
+							self.currTaskType = 'PSAP'
+				except UnicodeError:
+					pass
 
 		# Return method for identified task type
 		return self.taskDict[self.currTaskType]
@@ -233,6 +248,56 @@ class Response():
 			for line in f:
 				print(str(line.rstrip()).lstrip())
 
+	def evalPSAP(self, fullFileName):
+		""" Evaluate PSAP behavioral response file """
+		
+		colEvents = ['trial_num', 'option', 'onset', 'duration', 'provocation_time', 'presses']
+		dfEvent = pd.DataFrame(columns = colEvents) # event dataframe
+		trialCounter = 0
+		readLine = False
+		
+		with io.open(fullFileName,'r') as f:
+			for line in f:
+				
+				l = str(line.strip()).lstrip()
+				
+				if re.search('Test',l):
+					readLine = True
+					continue
+				
+				if readLine:
+					if re.search('Begin',l):
+						trialCounter  += 1
+						currTrial = {'trial_num': trialCounter, 'provocation_time': 'n/a', 'presses': 'n/a'}
+						currTrial['onset'] = int(l.split(' ')[0])/1000
+						currTrial['option'] = l.split(' ')[-1]
+					elif re.search('End',l):
+						currTrial['duration'] = int(l.split(' ')[0])/1000 - currTrial['onset']
+						dfEvent = dfEvent.append(pd.DataFrame(currTrial, index = [0]), ignore_index = True)
+					elif re.search('Provocation',l):
+						currTrial['provocation_time'] = int(l.split(' ')[0])/1000
+						currTrial['presses'] = int(l.split(' ')[-1])
+					else:
+						pass
+		
+		if 'duration' not in currTrial.keys():
+			currTrial['duration'] = 'n/a'
+			dfEvent = dfEvent.append(pd.DataFrame(currTrial, index = [0]), ignore_index = True)
+		
+		if 'Opt1' in dfEvent['option']:
+			dfEvent.at[dfEvent['option']=='Opt1','option'] = 'monetary'
+			dfEvent.at[dfEvent['option']=='Opt2','option'] = 'stealing'
+			dfEvent.at[dfEvent['option']=='Opt3','option'] = 'protection'
+		else:
+			dfEvent.at[dfEvent['option']=='Opt2','option'] = 'monetary'
+			dfEvent.at[dfEvent['option']=='Opt3','option'] = 'stealing'
+			dfEvent.at[dfEvent['option']=='Opt4','option'] = 'protection'
+		
+		print(dfEvent)
+
+		# Return event data frame (summary not written)
+		return {'event': dfEvent, 'summary': None}
+	
 	def evalFaces(self, fullFileName):
 		""" Evaluate faces behavioral response file """
 		
