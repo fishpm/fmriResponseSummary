@@ -51,8 +51,8 @@ class Response():
 		self.inputDict = {'processSingleFile': self.processSingleFile, 'processListFile': self.processListFile, 'processScanner': self.processScanner, 'processSubjID': self.processSubjID}
 
 		# Dictionary of methods for processing different task types
-		self.taskDict = {'VAS': self.evalAlcohol, 'Reward': self.evalReward, 'Faces': self.evalFaces, 'RLP': self.evalRLP, 'PSAP': self.evalPSAP}
-		self.outputName = {'VAS': 'alcohol', 'Reward': 'reward', 'Faces': 'faces', 'RLP': 'rlp', 'PSAP': 'psap'}
+		self.taskDict = {'VAS': self.evalAlcohol, 'Reward': self.evalReward, 'Faces': self.evalFaces, 'RLP': self.evalRLP, 'PSAP': self.evalPSAP, 'aarhus_music': self.evalAarhus}
+		self.outputName = {'VAS': 'alcohol', 'Reward': 'reward', 'Faces': 'faces', 'RLP': 'rlp', 'PSAP': 'psap', 'aarhus_music': 'aarhus'}
 
 		# MRI scanner name scheme
 		self.scannerNames = {'p': 'prisma', 'v': 'verio', 'm': 'mmr', 'n': 'mr001'}
@@ -62,7 +62,7 @@ class Response():
 
 		# Regexp for expected behavioral task file name structure
 		# self.allMatchTypes = r'^(VAS).*(.txt)$|^(faces[0-9].*(.txt)$|^(reward).*(.txt)$)'
-		self.allMatchTypes = r'^(VAS).*(.txt)$|^(HaririFaces[0-9]_dansk).*(.txt)$|^(Hariri_Reward_TC_dansk2_noTrigger).*(.txt)$|^(RLP).*(.txt)$|^(Events).*(.txt)$'
+		self.allMatchTypes = r'^(VAS).*(.txt)$|^(HaririFaces[0-9]_dansk).*(.txt)$|^(Hariri_Reward_TC_dansk2_noTrigger).*(.txt)$|^(RLP).*(.txt)$|^(Events).*(.txt)$|^(aarhus-music).*(.txt)$'
 
 		# Updated while processing inputs
 		self.currTaskType = ''
@@ -295,6 +295,50 @@ class Response():
 		
 		print(dfEvent)
 
+		# Return event data frame (summary not written)
+		return {'event': dfEvent, 'summary': None}
+	
+	def evalAarhus(self,fullFileName):
+		""" Evaluate Aarhus music behavioral response file """
+		
+		# column names
+		colEvents = ['stimulus', 'onset', 'duration', 'file']
+		
+		# variables to keep as strings
+		keepString = {'Procedure': 'music_file'}		
+		# variables to keep as numeric
+		keepNumeric = {'^(FixOnly.OnsetTime)': 'fix_on', '^(FixMusic[1-4].OnsetTime)': 'music_on'}
+		
+		paradigmInfo = {'music_file': [], 'fix_on': [], 'music_on': []}
+	
+		# Process fMRI behavioral file
+		with io.open(fullFileName,'r', encoding='utf-16') as f:
+			for line in f:
+				
+				l = str(line.rstrip()).lstrip()
+				
+				# pull relevant field for string and numeric values of interest
+				strCheck = [v for k,v in keepString.items() if re.search(k,l)]
+				numCheck = [v for k,v in keepNumeric.items() if re.search(k,l)]
+				
+				if strCheck:
+					paradigmInfo[''.join(strCheck)].append(l.split(': ')[1])
+				if numCheck:
+					paradigmInfo[''.join(numCheck)].append(int(l.split(': ')[1]))
+		
+		# create variables for df
+		stimulus = ['fixation','music','fixation','music','fixation','music','fixation','music','fixation']
+		files = ['n/a',paradigmInfo['music_file'][0],'n/a',paradigmInfo['music_file'][1],'n/a',paradigmInfo['music_file'][2],'n/a',paradigmInfo['music_file'][3],'n/a']
+		allonsets = paradigmInfo['fix_on'] + paradigmInfo['music_on']
+		allonsets.sort()
+		onsets = [(i-allonsets[0])/1000 for i in allonsets]
+		durations = [onsets[i]-onsets[i-1] for i in range(1,len(onsets))]
+		durations.append(10)
+		
+		currEvent = {'stimulus': stimulus, 'onset': onsets, 'duration': durations, 'file': files}
+		dfEvent = pd.DataFrame(columns = colEvents) # event dataframe
+		dfEvent = dfEvent.append(pd.DataFrame.from_dict(currEvent), ignore_index = True)
+		
 		# Return event data frame (summary not written)
 		return {'event': dfEvent, 'summary': None}
 	
