@@ -641,8 +641,8 @@ class Response():
 			
 			dfEvent = dfEvent.append(pd.DataFrame(currTrial, index = [0]), ignore_index = True)
 			dfEvent.loc[dfEvent['block_name']=='n/a', 'block_name'] = currTrial['block_name']
-			print(dfEvent)
-			print(currTrial['block_num'])
+			#print(dfEvent)
+			#print(currTrial['block_num'])
 			dfEvent.loc[dfEvent['block_num'].isna(), 'block_num'] = currTrial['block_num']
 			print(dfEvent)
 			dfEvent.loc[dfEvent.index[-1], 'trial_num'] = 'n/a'
@@ -669,6 +669,9 @@ class Response():
 				currTrial['low_num'] = None
 				if currTrial['resp']:
 					currTrial['num_shown'] = '*'
+				else:
+					currTrial['num_shown'] = '---'
+					currTrial['feedback'] = '---'
 			elif not currTrial['resp']:
 				currTrial['num_shown'] = '---'
 				currTrial['feedback'] = '---'
