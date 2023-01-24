@@ -16,6 +16,8 @@
 ## Alcohol Task (20180109)
 ## PSAP (20220708)
 ## RLP (20220628)
+## Breathing (20230117)
+## Loss Aversion (20230122) - CBS Entrepreneurship
 
 ### Updates
 ## 20201111 - work with MR001 datas
@@ -51,8 +53,8 @@ class Response():
 		self.inputDict = {'processSingleFile': self.processSingleFile, 'processListFile': self.processListFile, 'processScanner': self.processScanner, 'processSubjID': self.processSubjID}
 
 		# Dictionary of methods for processing different task types
-		self.taskDict = {'VAS': self.evalAlcohol, 'Reward': self.evalReward, 'Faces': self.evalFaces, 'RLP': self.evalRLP, 'PSAP': self.evalPSAP, 'aarhus_music': self.evalAarhus}
-		self.outputName = {'VAS': 'alcohol', 'Reward': 'reward', 'Faces': 'faces', 'RLP': 'rlp', 'PSAP': 'psap', 'aarhus_music': 'aarhus'}
+		self.taskDict = {'VAS': self.evalAlcohol, 'Reward': self.evalReward, 'Faces': self.evalFaces, 'RLP': self.evalRLP, 'PSAP': self.evalPSAP, 'aarhus_music': self.evalAarhus, 'breath': self.evalBreath, 'LA_fMRI': self.evalLossAversion}
+		self.outputName = {'VAS': 'alcohol', 'Reward': 'reward', 'Faces': 'faces', 'RLP': 'rlp', 'PSAP': 'psap', 'aarhus_music': 'aarhus', 'breath': 'breath', 'LA_fMRI': 'lossAversion'}
 
 		# MRI scanner name scheme
 		self.scannerNames = {'p': 'prisma', 'v': 'verio', 'm': 'mmr', 'n': 'mr001'}
@@ -62,13 +64,14 @@ class Response():
 
 		# Regexp for expected behavioral task file name structure
 		# self.allMatchTypes = r'^(VAS).*(.txt)$|^(faces[0-9].*(.txt)$|^(reward).*(.txt)$)'
-		self.allMatchTypes = r'^(VAS).*(.txt)$|^(HaririFaces[0-9]_dansk).*(.txt)$|^(Hariri_Reward_TC_dansk2_noTrigger).*(.txt)$|^(RLP).*(.txt)$|^(Events).*(.txt)$|^(aarhus-music).*(.txt)$'
+		self.allMatchTypes = r'^(VAS).*(.txt)$|^(HaririFaces[0-9]_dansk).*(.txt)$|^(Hariri_Reward_TC_dansk2_noTrigger).*(.txt)$|^(RLP).*(.txt)$|^(Events).*(.txt)$|^(aarhus-music).*(.txt)$|^(breathing).*(.txt)$|^(LA_fMRI_FourRuns).*(.txt)$'
 
 		# Updated while processing inputs
 		self.currTaskType = ''
 		self.currSubjID = ''
 		self.currSourceFile = ''
 		self.currTime = time.strftime('%c')
+		self.outFileSuffix = None
 
 		# SPM related structure (.mat file output)
 		self.spmStruct = {'names': [], 'onsets': [], 'durations': []}
@@ -247,6 +250,184 @@ class Response():
 		with io.open(fullFileName, 'r', encoding = 'utf-16') as f:
 			for line in f:
 				print(str(line.rstrip()).lstrip())
+
+	def evalLossAversion(self, fullFileName):
+		""" Evaluate faces behavioral response file """
+
+		# column names
+		colEvents = ['onset', 'duration', 'run_num', 'trial_num', 'stimulus_type', 'target_person', 'gamble_side', 'win_side',
+					 'win_amount', 'loss_amount', 'response_time', 'response', 'iti']
+
+		# variables to keep as strings
+		keepString = {'Procedure: GambleG[L|R]W[L|R]': 'block_name',
+					  'outperson': 'target_person'}
+
+		# variables to keep as numeric
+		keepNumeric = {'ITI': 'iti',
+					   'WinAmount': 'win_amount',
+					   'LossAmount': 'loss_amount',
+					   '(Gamble).*(.OnsetTime)': 'gamble_on',
+					   '(Fixation).*(.OnsetTime)': 'fix_on',
+					   '(GamblePresent).*(RT:)': 'gamble_rt',
+					   '(Fixation).*(RT:)': 'fix_rt',
+					   '(GamblePresent).*(RESP)': 'gamble_resp',
+					   '(Fixation).*(RESP)': 'fix_resp',
+					   '^(SelfList[0-9]{1}|Charity[0-9]{1}List).Sample': 'trial_num_current',
+					   '^(Level: 2)$': 'level'}
+
+		dfEvent = pd.DataFrame(columns=colEvents)  # event dataframe
+		trialCounter = 0
+		runCounter = 0
+		practice = True
+
+		# Process fMRI behavioral file
+		with io.open(fullFileName, 'r', encoding='utf-16') as f:
+			for line in f:
+
+				l = str(line.rstrip()).lstrip()
+
+				# signals end of paradigm
+				if l == 'Level: 1':
+					f.close()
+					currTrial['level'] = 1
+					dfEvent, trialCounter = self.eventLossAversion(currTrial, dfEvent, trialCounter, runCounter)
+					dfEvent.replace(np.nan, 'n/a', inplace=True)
+					return {'event': dfEvent, 'summary': None}
+
+				# new trial identifier
+				# avoids evaluating practice trials
+				if practice is True and re.search('^(Procedure: GambleG[L|R]W[L|R])$', l):
+					practice = False
+					trialCounter += 1
+					runCounter += 1
+					currTrial = {'trial_num': trialCounter}  # current trial information
+
+				if re.search('^(\*\*\* LogFrame Start \*\*\*)', l):
+					if practice:
+						continue
+					trialCounter += 1
+
+					dfEvent, trialCounter = self.eventLossAversion(currTrial, dfEvent, trialCounter, runCounter)
+					if trialCounter is 0:
+						practice = True
+						dfEvent = pd.DataFrame(columns=colEvents)  # event dataframe
+
+					currTrial = {'trial_num': trialCounter}
+
+				if practice is True:
+					continue
+
+				# pull relevant field for string and numeric values of interest
+				strCheck = [v for k, v in keepString.items() if re.search(k, l)]
+				numCheck = [v for k, v in keepNumeric.items() if re.search(k, l)]
+
+				if strCheck:
+					l_split = l.split(': ')
+					if l_split[1] == 'For velgørenhed':
+						l_split[1] = 'For velgoerenhed'
+					currTrial[''.join(strCheck)] = l_split[1]
+				elif numCheck:
+					l_split = l.split(': ')
+					if len(l_split) == 2:
+						currTrial[''.join(numCheck)] = int(l_split[1])
+					else:
+						currTrial[''.join(numCheck)] = None
+
+		# Return event data frame (summary not written)
+		return {'event': dfEvent, 'summary': None}
+
+	def eventLossAversion(self, currTrial, dfEvent, trialCounter, runCounter):
+		""" Organize current trial and update dfEvent """
+
+		if all([k in ['trial_num', 'level'] for k in currTrial.keys()]):
+
+			dfEvent = dfEvent.assign(run_num=runCounter)
+			dfEvent['onset'] = (dfEvent['onset'] - dfEvent.iloc[0]['onset'])/1000
+			dfEvent['duration'] = np.append(np.delete(np.array(dfEvent['onset'].diff()), 0), dfEvent['iti'].iloc[-1] / 1000)
+			self.outFileSuffix = 'run-' + str(runCounter)
+			self.writeRespCsv({'event': dfEvent, 'summary': None})
+			trialCounter = 0
+			return (dfEvent, trialCounter)
+
+		nrep = 2
+		if re.search('^(GambleGL)',currTrial['block_name']):
+			gamble_side = 'L'
+		elif re.search('^(GambleGR)',currTrial['block_name']):
+			gamble_side = 'R'
+
+		if re.search('^(GambleG[L|R]WL)',currTrial['block_name']):
+			win_side = 'L'
+		elif re.search('^(GambleG[L|R]WR)',currTrial['block_name']):
+			win_side = 'R'
+
+		if currTrial['gamble_resp'] is None:
+			currTrial['gamble_resp'] = 'n/a'
+		if currTrial['fix_resp'] is None:
+			currTrial['fix_resp'] = 'n/a'
+
+		if currTrial['gamble_rt'] is 0:
+			currTrial['gamble_rt'] = 'n/a'
+		if currTrial['fix_rt'] is 0:
+			currTrial['fix_rt'] = 'n/a'
+
+		# update currEvent
+		currEvent = {'onset': [currTrial['gamble_on'], currTrial['fix_on']], 'duration': np.repeat('n/a', nrep),
+					 'run_num': np.repeat('n/a', nrep), 'trial_num': np.repeat(currTrial['trial_num_current'], nrep),
+					 'stimulus_type': ['gamble', 'fixation'],
+					 'target_person': np.repeat(currTrial['target_person'], nrep),
+					 'gamble_side': [gamble_side, 'n/a'],
+					 'win_side': [win_side, 'n/a'],
+					 'win_amount': [currTrial['win_amount'], 'n/a'],
+					 'loss_amount': [currTrial['loss_amount'], 'n/a'],
+					 'response': [currTrial['gamble_resp'], currTrial['fix_resp']],
+					 'response_time': [currTrial['gamble_rt'], currTrial['fix_rt']],
+					 'iti': ['n/a', currTrial['iti']]}
+
+		# add currEvent to dfEvent
+		dfEvent = dfEvent.append(pd.DataFrame.from_dict(currEvent), ignore_index=True)
+
+		# return updated dfEvent
+		return (dfEvent, trialCounter)
+
+	def evalBreath(self, fullFileName):
+		""" Evaluate Breathing behavioral response file """
+
+		# column names
+		eventInfo = {'onset': [], 'duration': [], 'event_num': [], 'response': []}
+
+		# Process fMRI behavioral file
+		with io.open(fullFileName, 'r', encoding='utf-16') as f:
+			for line in f:
+
+				l = str(line.rstrip()).lstrip()
+
+				if re.search('KeyboardStimulus.OnsetTime',l):
+					l_split = l.split(': ')
+					startTime = int(l_split[1])
+					eventInfo['onset'].append(0)
+					eventInfo['event_num'].append(0)
+					eventInfo['response'].append('n/a')
+				elif re.search('KeyboardStimulus.OffsetTime',l):
+					l_split = l.split(': ')
+					endTime = int(l_split[1])
+				elif re.search('^(KeyPress[0-9]+RT)',l):
+					l_split = l.split(': ')
+					eventInfo['onset'].append((int(l_split[1]) - startTime)/1000)
+					eventInfo['event_num'].append(len(eventInfo['event_num']))
+				elif re.search('^(KeyPress[0-9]+RESP)',l):
+					l_split = l.split(': ')
+					eventInfo['response'].append(int(l_split[1]))
+
+		# calculate durations
+		durations = [np.round(eventInfo['onset'][i+1]-eventInfo['onset'][i],3) for i in range(len(eventInfo['onset'])-1)]
+		durations.append(np.round((endTime-startTime)/1000 - eventInfo['onset'][-1],3))
+		eventInfo['duration'] = durations
+
+		dfEvent = pd.DataFrame(columns=eventInfo.keys())  # event dataframe
+		dfEvent = dfEvent.append(pd.DataFrame.from_dict(eventInfo), ignore_index=True)
+
+		# Return event data frame (summary not written)
+		return {'event': dfEvent, 'summary': None}
 
 	def evalPSAP(self, fullFileName):
 		""" Evaluate PSAP behavioral response file """
@@ -1013,7 +1194,11 @@ class Response():
 		self.currTime = time.strftime('%c')
 
 		scannerID_initialsOmit = self.idTrim(self.currSubjID)
-		eventFileName = '%s_%s_EventResp.tsv' % (scannerID_initialsOmit, self.outputName[self.currTaskType])
+		if self.outFileSuffix is not None:
+			suffix = '_' + self.outFileSuffix
+		else:
+			suffix = ''
+		eventFileName = '%s_%s_EventResp%s.tsv' % (scannerID_initialsOmit, self.outputName[self.currTaskType], suffix)
 		summaryFileName = '%s_%s_SummaryResp.txt' % (scannerID_initialsOmit, self.outputName[self.currTaskType])
 
 		# Write output files
@@ -1056,5 +1241,5 @@ fileNames = a.inputDict[inputInfo[0]](inputInfo[1])
 for f in fileNames:
 	taskType = a.taskIdentify(f)
 	respData = taskType(f)
-	a.writeRespCsv(respData)
-	a.writeRespMat(respData)
+	#a.writeRespCsv(respData)
+	#a.writeRespMat(respData)
