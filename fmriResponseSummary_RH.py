@@ -343,9 +343,13 @@ class Response():
 
 			dfEvent = dfEvent.assign(run_num=runCounter)
 			dfEvent['onset'] = (dfEvent['onset'] - dfEvent.iloc[0]['onset'])/1000
+			dfEvent['response_time'] = [i/1000 if isinstance(i,int) else 'n/a' for i in dfEvent['response_time']]
+			dfEvent['iti'] = [i / 1000 if isinstance(i, int) else 'n/a' for i in dfEvent['iti']]
 			dfEvent['duration'] = np.append(np.delete(np.array(dfEvent['onset'].diff()), 0), dfEvent['iti'].iloc[-1] / 1000)
 			self.outFileSuffix = 'run-' + str(runCounter)
-			self.writeRespCsv({'event': dfEvent, 'summary': None})
+			dfEvent.replace(np.nan, 'n/a', inplace=True)
+			if currTrial['level'] is not 1:
+				self.writeRespCsv({'event': dfEvent, 'summary': None})
 			trialCounter = 0
 			return (dfEvent, trialCounter)
 
@@ -1241,5 +1245,5 @@ fileNames = a.inputDict[inputInfo[0]](inputInfo[1])
 for f in fileNames:
 	taskType = a.taskIdentify(f)
 	respData = taskType(f)
-	#a.writeRespCsv(respData)
-	#a.writeRespMat(respData)
+	a.writeRespCsv(respData)
+	a.writeRespMat(respData)
