@@ -736,39 +736,53 @@ class Response():
 		""" Evaluate reward behavioral response file """
 		
 		# column names
-		colEvents = ['block_name', 'block_num', 'trial_num', 'stimulus_type', 'onset', 'duration', 'response_time', 'response', 'high_num', 'low_num', 'num_shown', 'outcome', 'feedback']
+		colEvents = ['block_name', 'block_num', 'trial_num', 'stimulus_type', 'onset', 'duration', 'response_time',
+					 'response', 'high_num', 'low_num', 'num_shown', 'outcome', 'feedback']
 		
 		# variables to keep as strings
 		keepString = {'TrialCondition': 'subtype', 'lowNum': 'low_num', 'highNum': 'high_num', '(Reward|Loss|Control)BlockProc': 'block_name'}
 		
 		# variables to keep as numeric
-		keepNumeric = {'^(GamStim.OnsetTime|ControlStim.OnsetTime)': 'guess_on', '^(GamStim.RT|ControlStim.RT)': 'rt', '^(GamStim.RESP|ControlStim.RESP)': 'resp', '^(Feedback[RL]{1}.OnsetTime|ControlFeedbackStar.OnsetTime)': 'num_on', '^(Feedback(Up|Down)Arrow.OnsetTime|ControlFeedbackCircle.OnsetTime)': 'feed_on', 'GuessingFixation.OnsetTime': 'fix_on', '^(GuessingRunBlockList)': 'block_num', '^(GuessNumber.OnsetTime|PressButton.OnsetTime)': 'onset'}
-		
+		keepNumeric = {'^(GamStim.OnsetTime|ControlStim.OnsetTime)': 'guess_on', '^(GamStim.RT|ControlStim.RT)': 'rt',
+					   '^(GamStim.RESP|ControlStim.RESP)': 'resp',
+					   '^(Feedback[RL]{1}.OnsetTime|ControlFeedbackStar.OnsetTime)': 'num_on',
+					   '^(Feedback(Up|Down)Arrow.OnsetTime|ControlFeedbackCircle.OnsetTime)': 'feed_on',
+					   'GuessingFixation.OnsetTime': 'fix_on', '^(GuessingRunBlockList)': 'block_num',
+					   '^(GuessNumber.OnsetTime|PressButton.OnsetTime)': 'onset',
+					   '^(GamStim.OnsetToOnsetTime|ControlStim.OnsetToOnsetTime)': 'onset2onset'}
+
 		# feedback dictionary
 		feedbackDict = {'Up': 'up_arrow', 'Down': 'down_arrow', 'Circle': 'circle'}
 		
 		dfEvent = pd.DataFrame(columns = colEvents) # event dataframe
 		trialCounter = 0
 		currTrial = {'trial_num': trialCounter} # current trial information
+		allTrials = [] # work around for .txt file missing some onset times
 	
 		# Process fMRI behavioral file
 		with io.open(fullFileName,'r', encoding='utf-16') as f:
 			for line in f:
 				
 				l = str(line.rstrip()).lstrip()
-				
+
 				# signals end of paradigm
 				if l=='Procedure: GuesingRunProc':
 					f.close()
-					dfEvent = self.eventReward({}, dfEvent, trialCounter)
-					dfEvent.replace(np.nan,'n/a',inplace=True)
+					if len(allTrials) > 0:
+						dfEvent = self.eventReward2(allTrials,dfEvent,trialCounter)
+					else:
+						dfEvent = self.eventReward({}, dfEvent, trialCounter)
+					dfEvent.replace(np.nan, 'n/a', inplace=True)
 					return {'event': dfEvent, 'summary': None}
 				
 				# new trial identifier
 				if re.search('^(\*\*\* LogFrame Start \*\*\*)',l):
 					trialCounter += 1
 					if trialCounter > 1:
-						dfEvent, trialCounter = self.eventReward(currTrial, dfEvent, trialCounter)
+						if any(['guess_on' and not 'num_on' in currTrial.keys(), 'block_name' and not 'onset' in currTrial.keys()]) and len(currTrial.keys())>1:
+							allTrials.append(currTrial)
+						else:
+							dfEvent, trialCounter = self.eventReward(currTrial, dfEvent, trialCounter)
 					
 					currTrial = {'trial_num': trialCounter}
 				
@@ -791,11 +805,8 @@ class Response():
 							currTrial['feedback'] = ''.join([v for k,v in feedbackDict.items() if re.search(k,l_split[0])])
 					else:
 						currTrial[''.join(numCheck)] = None
-		
-		# Return event data frame (summary not written)
-		return {'event': dfEvent, 'summary': None}
 	
-	def eventReward(self,currTrial, dfEvent, trialCounter):
+	def eventReward(self, currTrial, dfEvent, trialCounter):
 		""" Organize current trial and update dfEvent """
 		
 		# processing end of paradigm
@@ -878,7 +889,115 @@ class Response():
 		# return updated dfEvent
 		return(dfEvent, trialCounter)
 	
-	
+	def eventReward2(self, allTrials, dfEvent, trialCounter):
+		""" Organizes trials with limited paradigm timing information """
+		""" MR001 CBS-entrepreneurship project e-prime behavioral .txt files contain fewer event time stamps """
+
+		#colEvents = ['onset', 'duration', 'block_name', 'block_num', 'trial_num', 'stimulus_type', 'response_time', 'response', 'high_num', 'low_num', 'num_shown', 'outcome', 'feedback']
+
+		#dfEvent = pd.DataFrame(columns=colEvents)  # event dataframe
+
+		instr_dur    = 3 # instructions duration fixed at 3 s
+		nrep         = 4 # each trial has four parts
+		trialCounter = 0
+		blockCounter = 1
+
+		for i in range(len(allTrials) - 1):
+			if i == 0:
+				currBlock = {'onset': [0], 'duration': [instr_dur], 'block_name': ['Instruction'],
+							 'block_num': [blockCounter], 'trial_num': ['n/a'], 'stimulus_type': ['n/a'],
+							 'response_time': ['n/a'], 'response': ['n/a'], 'high_num': ['n/a'], 'low_num': ['n/a'],
+							 'num_shown': ['n/a'], 'outcome': ['n/a'], 'feedback': ['n/a']}
+				overallStartTime = allTrials[i]['guess_on'] - instr_dur * 1000
+
+			if 'subtype' in allTrials[i].keys():
+				trialCounter += 1
+				currGuessOn = (allTrials[i]['guess_on'] - overallStartTime) / 1000
+				currGuessDur = (allTrials[i]['onset2onset']) / 1000
+				currNumbrOn = currGuessOn + (allTrials[i]['onset2onset'] / 1000)
+				currNumbrDur = 0.5
+				currFeedbOn = currNumbrOn + currNumbrDur
+				currFeedbDur = 0.5
+				currFixatOn = currFeedbOn + currFeedbDur
+
+				if 'subtype' in allTrials[i + 1].keys():
+					nextGuessOn = (allTrials[i + 1]['guess_on'] - overallStartTime) / 1000
+					currFixatDur = nextGuessOn - currGuessOn - currGuessDur - currNumbrDur - currFeedbDur
+				elif i + 2 < len(allTrials) - 1:
+					nextGuessOn = (allTrials[i + 2]['guess_on'] - overallStartTime) / 1000
+					currFixatDur = nextGuessOn - currGuessOn - currGuessDur - currNumbrDur - currFeedbDur - instr_dur
+
+				currBlock['onset'] = currBlock['onset'] + [currGuessOn, currNumbrOn, currFeedbOn, currFixatOn]
+				currBlock['duration'] = currBlock['duration'] + [currGuessDur, currNumbrDur, currFeedbDur, currFixatDur]
+				currBlock['block_name'] = currBlock['block_name'] + ['n/a'] * nrep
+				currBlock['block_num'] = currBlock['block_num'] + [blockCounter] * nrep
+				currBlock['trial_num'] = currBlock['trial_num'] + [trialCounter] * nrep
+				currBlock['stimulus_type'] = currBlock['stimulus_type'] + ['guess', 'number', 'feedback', 'fixation']
+				if allTrials[i]['rt'] is not None:
+					currBlock['response_time'] = currBlock['response_time'] + [allTrials[i]['rt'] / 1000] + ['n/a'] * (
+								nrep - 1)
+					currBlock['response'] = currBlock['response'] + [allTrials[i]['resp']] + ['n/a'] * (nrep - 1)
+				else:
+					currBlock['response_time'] = currBlock['response_time'] + ['n/a'] * nrep
+					currBlock['response'] = currBlock['response'] + ['n/a'] * nrep
+
+				if allTrials[i]['subtype'] in ['Reward', 'Loss']:
+					currBlock['high_num'] = currBlock['high_num'] + ['n/a'] + [allTrials[i]['high_num']] + ['n/a'] * 2
+					currBlock['low_num'] = currBlock['low_num'] + ['n/a'] + [allTrials[i]['low_num']] + ['n/a'] * 2
+					if allTrials[i]['subtype'] == 'Reward' and allTrials[i]['resp']:
+						num_shown = [allTrials[i]['low_num'], allTrials[i]['high_num']][allTrials[i]['resp'] == 3]
+						currBlock['num_shown'] = currBlock['num_shown'] + ['n/a'] + [num_shown] + ['n/a'] * 2
+						currBlock['outcome'] = currBlock['outcome'] + ['n/a'] * 2 + ['Reward'] + ['n/a']
+						currBlock['feedback'] = currBlock['feedback'] + ['n/a'] * 2 + ['up_arrow'] + ['n/a']
+					elif allTrials[i]['subtype'] == 'Loss' and allTrials[i]['resp']:
+						num_shown = [allTrials[i]['low_num'], allTrials[i]['high_num']][allTrials[i]['resp'] == 2]
+						currBlock['num_shown'] = currBlock['num_shown'] + ['n/a'] + [num_shown] + ['n/a'] * 2
+						currBlock['outcome'] = currBlock['outcome'] + ['n/a'] * 2 + ['Loss'] + ['n/a']
+						currBlock['feedback'] = currBlock['feedback'] + ['n/a'] * 2 + ['down_arrow'] + ['n/a']
+					else:
+						currBlock['num_shown'] = currBlock['num_shown'] + ['n/a'] + ['---'] + ['n/a'] * 2
+						currBlock['outcome'] = currBlock['outcome'] + ['n/a'] * 2 + ['---'] + ['n/a']
+						currBlock['feedback'] = currBlock['feedback'] + ['n/a'] * 2 + ['---'] + ['n/a']
+				elif allTrials[i]['subtype'] == 'Control':
+					currBlock['high_num'] = currBlock['high_num'] + ['n/a'] * nrep
+					currBlock['low_num'] = currBlock['low_num'] + ['n/a'] * nrep
+					if allTrials[i]['resp']:
+						currBlock['num_shown'] = currBlock['num_shown'] + ['n/a'] + ['*'] + ['n/a'] * 2
+						currBlock['outcome'] = currBlock['outcome'] + ['n/a'] * 2 + ['Control'] + ['n/a']
+						currBlock['feedback'] = currBlock['feedback'] + ['n/a'] * 2 + ['circle'] + ['n/a']
+					else:
+						currBlock['num_shown'] = currBlock['num_shown'] + ['n/a'] + ['---'] + ['n/a'] * 2
+						currBlock['outcome'] = currBlock['outcome'] + ['n/a'] * 2 + ['---'] + ['n/a']
+						currBlock['feedback'] = currBlock['feedback'] + ['n/a'] * 2 + ['---'] + ['n/a']
+
+			elif 'block_name' in allTrials[i].keys():
+				currBlock['block_name'] = list(
+					map(lambda x: x.replace('n/a', allTrials[i]['block_name']), currBlock['block_name']))
+				if allTrials[i]['block_name'] in ['Reward', 'Loss']:
+					currBlock['block_name'] = list(
+						map(lambda x: x.replace('n/a', 'GuessNumber'), currBlock['block_name']))
+				else:
+					currBlock['block_name'] = list(
+						map(lambda x: x.replace('n/a', 'PressButton'), currBlock['block_name']))
+
+				if i < len(allTrials) - 1:
+					currBlock['onset'].append(currBlock['onset'][-1] + currBlock['duration'][-1])
+					currBlock['duration'].append(instr_dur)
+					currBlock['block_name'].append('Instruction')
+					currBlock['block_num'].append(currBlock['block_num'][-1] + 1)
+					blockCounter += 1
+					currBlock['trial_num'].append('n/a')
+					currBlock['stimulus_type'].append('n/a')
+					currBlock['response_time'].append('n/a')
+					currBlock['response'].append('n/a')
+					currBlock['high_num'].append('n/a')
+					currBlock['low_num'].append('n/a')
+					currBlock['num_shown'].append('n/a')
+					currBlock['outcome'].append('n/a')
+					currBlock['feedback'].append('n/a')
+
+		dfEvent = pd.DataFrame(currBlock)
+		return(dfEvent)
 	
 	def evalReward_old(self, fullFileName):
 		""" Evaluate reward behavioral response file """
